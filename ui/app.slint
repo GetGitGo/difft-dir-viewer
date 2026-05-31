@@ -15,6 +15,8 @@ export struct DiffLine {
     rhs-line: int,
     lhs-plain-text: string,
     rhs-plain-text: string,
+    lhs-plain-color: brush,
+    rhs-plain-color: brush,
     lhs-content-width: length,
     rhs-content-width: length,
     lhs-segments: [TextSegment],
@@ -53,7 +55,7 @@ component FileListRow inherits Rectangle {
     in property <length> row-height: 22px;
     in property <length> path-scroll-x: 0px;
     in property <length> path-view-width: 0px;
-    in property <length> status-width: 24px;
+    in property <length> status-width: 28px;
     callback activate();
     callback horizontal-scroll(delta: length);
     callback path-interacted();
@@ -67,7 +69,7 @@ component FileListRow inherits Rectangle {
     height: root.row-height;
     background: root.selected ? #44475a : (path-touch.has-hover ? #313340 : #21222c);
     border-radius: 2px;
-    clip: true;
+    clip: false;
 
     path-panel := Rectangle {
         x: 0;
@@ -117,7 +119,8 @@ component FileListRow inherits Rectangle {
         }
 
         Text {
-            width: parent.width - 4px;
+            x: 4px;
+            width: parent.width - 8px;
             height: root.row-height;
             text: root.status;
             color: #6272a4;
@@ -138,7 +141,8 @@ component ChangedFilesScrollView inherits Rectangle {
     callback file-selected(int);
     callback file-list-interacted();
 
-    private property <length> status-width: 24px;
+    private property <length> status-width: 28px;
+    private property <length> scrollbar-gutter: 10px;
     private property <length> path-view-width: max(0px, list.width - root.status-width);
     private property <length> scroll-max-x: max(0px, root.max-path-width - path-view-width);
     private property <length> scroll-min-y: min(0px, list.visible-height - list.viewport-height);
@@ -155,10 +159,11 @@ component ChangedFilesScrollView inherits Rectangle {
     }
 
     list := ListView {
-        width: parent.width;
+        width: parent.width - root.scrollbar-gutter;
         height: parent.height;
 
         for file[index] in root.files: FileListRow {
+            width: list.width;
             path: file.path;
             status: file.status;
             selected: index == root.selected-index;
@@ -228,6 +233,8 @@ component CodeSide inherits Rectangle {
     in property <[TextSegment]> segments;
     in property <bool> novel;
     in property <length> line-height: 20px;
+    in property <length> code-font-size: 12px;
+    in property <brush> gutter-line-color: #6272a4;
     in property <length> gutter-width: 44px;
     in property <length> code-scroll-x: 0px;
     callback horizontal-scroll(delta: length);
@@ -258,9 +265,10 @@ component CodeSide inherits Rectangle {
             width: parent.width - 6px;
             height: root.line-height;
             text: root.line-number >= 1 ? root.line-number : "";
-            color: #6272a4;
-            font-family: "Courier New";
-            font-size: 12px;
+            color: root.gutter-line-color;
+            font-family: "monospace";
+            font-size: root.code-font-size;
+            font-weight: 700;
             horizontal-alignment: right;
             vertical-alignment: center;
         }
@@ -278,8 +286,9 @@ component CodeSide inherits Rectangle {
             height: root.line-height;
             text: root.plain-text;
             color: root.plain-color;
-            font-family: "Courier New";
-            font-size: 12px;
+            font-family: "monospace";
+            font-size: root.code-font-size;
+            font-weight: 700;
             wrap: no-wrap;
             horizontal-alignment: left;
             vertical-alignment: center;
@@ -287,13 +296,13 @@ component CodeSide inherits Rectangle {
         }
 
         for seg in root.segments: Text {
-            x: seg.x-offset - root.code-scroll-x;
+            x: seg.x-offset * root.code-font-size / 12px - root.code-scroll-x;
             height: root.line-height;
             text: seg.text;
             color: seg.color;
-            font-family: "Courier New";
-            font-size: 12px;
-            font-weight: seg.bold ? 700 : 400;
+            font-family: "monospace";
+            font-size: root.code-font-size;
+            font-weight: 700;
             font-italic: seg.italic;
             vertical-alignment: center;
         }
@@ -316,14 +325,17 @@ component CodeSide inherits Rectangle {
 
 component DiffCodeScrollView inherits Rectangle {
     in property <length> code-line-height;
+    in property <length> code-font-size: 12px;
     in property <length> line-number-width;
+    in property <brush> gutter-line-color;
     in property <[DiffLine]> lines;
     in property <length> max-content-width: 0px;
     in-out property <length> code-scroll-x: 0px;
     callback code-interacted();
 
     private property <length> column-code-width: max(0px, list.width / 2 - root.line-number-width);
-    private property <length> scroll-max-x: max(0px, root.max-content-width - column-code-width);
+    private property <length> scaled-max-content-width: root.max-content-width * root.code-font-size / 12px;
+    private property <length> scroll-max-x: max(0px, root.scaled-max-content-width - column-code-width);
 
     vertical-stretch: 1;
     horizontal-stretch: 1;
@@ -341,11 +353,13 @@ component DiffCodeScrollView inherits Rectangle {
 
             CodeSide {
                 line-height: root.code-line-height;
+                code-font-size: root.code-font-size;
+                gutter-line-color: root.gutter-line-color;
                 gutter-width: root.line-number-width;
                 code-scroll-x: root.code-scroll-x;
                 line-number: line.lhs-line;
                 plain-text: line.lhs-plain-text;
-                plain-color: line.lhs-novel ? #ff5555 : #f8f8f2;
+                plain-color: line.lhs-plain-color;
                 segments: line.lhs-segments;
                 novel: line.lhs-novel;
                 horizontal-scroll(delta) => {
@@ -358,11 +372,13 @@ component DiffCodeScrollView inherits Rectangle {
 
             CodeSide {
                 line-height: root.code-line-height;
+                code-font-size: root.code-font-size;
+                gutter-line-color: root.gutter-line-color;
                 gutter-width: root.line-number-width;
                 code-scroll-x: root.code-scroll-x;
                 line-number: line.rhs-line;
                 plain-text: line.rhs-plain-text;
-                plain-color: line.rhs-novel ? #50fa7b : #f8f8f2;
+                plain-color: line.rhs-plain-color;
                 segments: line.rhs-segments;
                 novel: line.rhs-novel;
                 horizontal-scroll(delta) => {
@@ -379,6 +395,10 @@ component DiffCodeScrollView inherits Rectangle {
         root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
     }
 
+    changed code-font-size => {
+        root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
+    }
+
     changed scroll-max-x => {
         root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
     }
@@ -389,11 +409,11 @@ component DiffCodeScrollView inherits Rectangle {
     }
 
     public function scroll-code-left() {
-        root.code-scroll-x = max(0px, root.code-scroll-x - 48px);
+        root.code-scroll-x = max(0px, root.code-scroll-x - root.code-font-size * 48 / 12);
     }
 
     public function scroll-code-right() {
-        root.code-scroll-x = min(root.scroll-max-x, root.code-scroll-x + 48px);
+        root.code-scroll-x = min(root.scroll-max-x, root.code-scroll-x + root.code-font-size * 48 / 12);
     }
 
     public function scroll-code-horizontal(delta: length) {
@@ -433,11 +453,14 @@ export component MainWindow inherits Window {
     forward-focus: root-focus;
 
     callback file-selected(int);
+    callback quit-requested();
 
     in-out property <length> toolbar-height: 28px;
     in-out property <length> toolbar-gap: 6px;
-    in-out property <length> code-line-height: 20px;
-    in-out property <length> line-number-width: 44px;
+    in-out property <length> code-font-size: 12px;
+    in-out property <brush> gutter-line-color: #6272a4;
+    private property <length> code-line-height: root.code-font-size * 20 / 12;
+    private property <length> line-number-width: root.code-font-size * 44 / 12;
     in-out property <length> file-list-width: 240px;
     in-out property <length> file-row-height: 22px;
 
@@ -540,6 +563,18 @@ export component MainWindow inherits Window {
         event.text == "g"
             && !event.modifiers.shift
             && !root.vim-modifiers(event)
+    }
+
+    pure function is-code-font-larger(event: KeyEvent) -> bool {
+        root.vim-modifiers(event) && (event.text == "=" || event.text == "+")
+    }
+
+    pure function is-code-font-smaller(event: KeyEvent) -> bool {
+        root.vim-modifiers(event) && event.text == "-"
+    }
+
+    pure function is-quit(event: KeyEvent) -> bool {
+        event.text == "q" && !event.modifiers.shift && !root.vim-modifiers(event)
     }
 
     root-focus := FocusScope {
@@ -651,6 +686,18 @@ export component MainWindow inherits Window {
                 }
             }
             root.vim-pending-g = false;
+            if (root.is-quit(event)) {
+                root.quit-requested();
+                return accept;
+            }
+            if (root.is-code-font-larger(event)) {
+                root.code-font-size = min(24px, root.code-font-size + 1px);
+                return accept;
+            }
+            if (root.is-code-font-smaller(event)) {
+                root.code-font-size = max(8px, root.code-font-size - 1px);
+                return accept;
+            }
             return reject;
         }
 
@@ -740,7 +787,9 @@ export component MainWindow inherits Window {
                     width: parent.width;
                     height: parent.height;
                     code-line-height: root.code-line-height;
+                    code-font-size: root.code-font-size;
                     line-number-width: root.line-number-width;
+                    gutter-line-color: root.gutter-line-color;
                     lines: root.lines;
                     code-scroll-x <=> root.code-scroll-x;
                     max-content-width: root.max-content-width;

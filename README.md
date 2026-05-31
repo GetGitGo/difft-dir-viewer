@@ -177,7 +177,22 @@ On macOS, **Ctrl** in the table below also matches **⌘ (Meta)** for the same a
 
 Line numbers sit in a fixed **gutter** column; only the code pane scrolls horizontally.
 
-**Changed files** sidebar: paths scroll horizontally (status column stays fixed). Click the sidebar to route the shortcuts above to the file list; click the code pane to route them to the diff view.
+### Font size
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+=` or `Ctrl++` / **⌘=** / **⌘+** | Increase code font size (8–24 px) |
+| `Ctrl+-` / **⌘-** | Decrease code font size |
+
+Line height, gutter width, and horizontal scroll step scale with the font size. Code uses the OS default **monospace** font at bold weight.
+
+### Quit
+
+| Key | Action |
+|-----|--------|
+| `q` | Quit the viewer |
+
+**Changed files** sidebar: paths scroll horizontally (status column stays fixed). Click the sidebar to route the shortcuts above to the file list; click the code pane to route them to the diff view. Font-size shortcuts apply regardless of sidebar vs code focus.
 
 ## JSON format (important)
 

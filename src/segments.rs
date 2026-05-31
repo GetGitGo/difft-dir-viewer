@@ -3,6 +3,7 @@
 use serde::Deserialize;
 use slint::{Brush, Color, SharedString};
 
+/// Syntax highlight category from difft JSON spans.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Highlight {
@@ -15,24 +16,32 @@ pub enum Highlight {
     TreeSitterError,
 }
 
+/// One highlighted substring within a diff line.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct TextSpan {
+    /// Byte/char start offset in the line text.
     pub start: u32,
+    /// End offset (exclusive).
     pub end: u32,
+    /// Span text when difft sends it separately from the line.
     pub content: String,
     pub highlight: Highlight,
+    /// True when this span is part of a novel (changed) region.
     #[serde(default)]
     pub is_novel: bool,
 }
 
+/// A styled text run for one side of a diff line.
 #[derive(Debug, Clone)]
 pub struct Segment {
     pub text: String,
+    /// Dracula-theme hex color for Slint rendering.
     pub color: &'static str,
     pub bold: bool,
     pub italic: bool,
 }
 
+/// Left (A) or right (B) pane when choosing novel highlight colors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
     Left,
@@ -47,6 +56,7 @@ const BLUE: &str = "#6272a4";
 const PURPLE: &str = "#bd93f9";
 const YELLOW: &str = "#f1fa8c";
 
+/// Novel (changed) text color for the given pane.
 fn novel_color(side: Side) -> &'static str {
     match side {
         Side::Left => RED,
@@ -54,6 +64,7 @@ fn novel_color(side: Side) -> &'static str {
     }
 }
 
+/// Base syntax color for an unchanged span.
 fn syntax_color(highlight: Highlight) -> &'static str {
     match highlight {
         Highlight::String => MAGENTA,
@@ -64,6 +75,7 @@ fn syntax_color(highlight: Highlight) -> &'static str {
     }
 }
 
+/// Build one styled segment from span metadata and pane side.
 fn style_segment(content: &str, highlight: Highlight, is_novel: bool, side: Side) -> Segment {
     let bold = matches!(highlight, Highlight::Keyword | Highlight::Type);
     let italic = matches!(highlight, Highlight::Comment);
@@ -80,6 +92,7 @@ fn style_segment(content: &str, highlight: Highlight, is_novel: bool, side: Side
     }
 }
 
+/// Style gap text between spans (or a whole line when spans are absent).
 fn gap_segment(content: &str, line_novel: bool, side: Side) -> Segment {
     Segment {
         text: content.to_owned(),
@@ -93,6 +106,7 @@ fn gap_segment(content: &str, line_novel: bool, side: Side) -> Segment {
     }
 }
 
+/// Merge adjacent segments that share the same style.
 fn merge_segments(mut segments: Vec<Segment>) -> Vec<Segment> {
     if segments.len() < 2 {
         return segments;
@@ -161,6 +175,7 @@ pub fn build_segments(
     merge_segments(segments)
 }
 
+/// Parse a `#rrggbb` hex string into a Slint brush.
 fn brush_from_hex(hex: &str) -> Brush {
     let hex = hex.trim_start_matches('#');
     let value = u32::from_str_radix(hex, 16).unwrap_or(0xf8f8f2);
@@ -172,12 +187,46 @@ fn brush_from_hex(hex: &str) -> Brush {
 }
 
 /// Approximate advance width for "Courier New" 12px in the viewer.
-const CHAR_WIDTH: f32 = 7.2;
+pub const CHAR_WIDTH: f32 = 7.2;
 
+pub const GUTTER_LINE: &str = "#6272a4";
+
+pub fn adjust_brightness_hex(hex: &str, factor: f32) -> String {
+    let hex = hex.trim_start_matches('#');
+    let value = u32::from_str_radix(hex, 16).unwrap_or(0xf8_f8_f2);
+    let r = ((value >> 16) & 0xff) as f32;
+    let g = ((value >> 8) & 0xff) as f32;
+    let b = (value & 0xff) as f32;
+    let scale = |c: f32| (c * factor).round().clamp(0.0, 255.0) as u8;
+    format!("#{:02x}{:02x}{:02x}", scale(r), scale(g), scale(b))
+}
+
+pub fn brush_with_brightness(hex: &str, factor: f32) -> Brush {
+    brush_from_hex(&adjust_brightness_hex(hex, factor))
+}
+
+/// Global code foreground scale (fixed; max supported by the viewer).
+pub const CODE_BRIGHTNESS: f32 = 1.3;
+
+pub fn code_brush(hex: &str) -> Brush {
+    brush_with_brightness(hex, CODE_BRIGHTNESS)
+}
+
+pub fn plain_line_brush(novel: bool, side: Side) -> Brush {
+    let hex = if novel {
+        novel_color(side)
+    } else {
+        WHITE
+    };
+    code_brush(hex)
+}
+
+/// Estimate rendered width of monospace text for horizontal scrolling.
 pub fn text_pixel_width(text: &str) -> f32 {
     text.chars().count() as f32 * CHAR_WIDTH
 }
 
+/// Convert styled segments into Slint `TextSegment` models with x offsets.
 pub fn to_slint_segments(segments: &[Segment]) -> slint::ModelRc<crate::TextSegment> {
     let mut x = 0.0f32;
     slint::ModelRc::new(slint::VecModel::from(
@@ -186,7 +235,7 @@ pub fn to_slint_segments(segments: &[Segment]) -> slint::ModelRc<crate::TextSegm
             .map(|seg| {
                 let item = crate::TextSegment {
                     text: SharedString::from(seg.text.as_str()),
-                    color: brush_from_hex(seg.color),
+                    color: code_brush(seg.color),
                     bold: seg.bold,
                     italic: seg.italic,
                     x_offset: x,
@@ -213,5 +262,17 @@ mod tests {
         }];
         let segments = build_segments("      \"Does stuff.\"", &spans, false, Side::Left);
         assert!(segments.iter().any(|s| s.color == MAGENTA));
+    }
+
+    #[test]
+    fn adjust_brightness_scales_rgb() {
+        assert_eq!(adjust_brightness_hex("#808080", 1.5), "#c0c0c0");
+        assert_eq!(adjust_brightness_hex("#ffffff", 0.5), "#808080");
+    }
+
+    #[test]
+    fn adjust_brightness_clamps_to_byte_range() {
+        assert_eq!(adjust_brightness_hex("#ffffff", 2.0), "#ffffff");
+        assert_eq!(adjust_brightness_hex("#000000", 0.1), "#000000");
     }
 }

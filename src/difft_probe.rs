@@ -25,6 +25,7 @@ pub fn difft_command(path: &Path) -> Command {
     subprocess_command(path)
 }
 
+/// Platform-specific `difft` executable name.
 fn difft_binary_name() -> &'static str {
     if cfg!(windows) {
         "difft.exe"
@@ -33,6 +34,7 @@ fn difft_binary_name() -> &'static str {
     }
 }
 
+/// Return a path and, on Windows, the same path with `.exe` appended.
 fn difft_path_variants(path: PathBuf) -> Vec<PathBuf> {
     let mut paths = vec![path.clone()];
     if env::consts::EXE_SUFFIX.is_empty() || path.extension().is_some() {
@@ -47,6 +49,7 @@ fn difft_path_variants(path: PathBuf) -> Vec<PathBuf> {
     paths
 }
 
+/// Return true if `difft --version` succeeds for this binary.
 fn difft_works(path: &Path) -> bool {
     difft_command(path)
         .arg("--version")
@@ -55,6 +58,7 @@ fn difft_works(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Return the first candidate path that exists and passes `difft_works`.
 fn first_working_path(paths: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
     for path in paths {
         if path.is_file() && difft_works(&path) {
@@ -64,6 +68,7 @@ fn first_working_path(paths: impl IntoIterator<Item = PathBuf>) -> Option<PathBu
     None
 }
 
+/// Collect lookup locations: `DIFT_PATH`, next to this exe, then bare name on PATH.
 fn candidate_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
@@ -82,6 +87,7 @@ fn candidate_paths() -> Vec<PathBuf> {
     paths
 }
 
+/// Resolve `difft` via `which` / `where` when direct candidates fail.
 fn path_lookup_hint() -> Option<PathBuf> {
     let lookup = subprocess_command(if cfg!(windows) { "where" } else { "which" })
         .arg("difft")
@@ -100,6 +106,7 @@ fn path_lookup_hint() -> Option<PathBuf> {
 
 const VERIFY_STEP: &str = "\nVerification:\n  difft --version";
 
+/// Platform-specific install hints shown when `difft` is missing.
 pub fn install_message() -> String {
     if cfg!(target_os = "macos") {
         format!(
@@ -145,6 +152,7 @@ pub fn install_message() -> String {
     }
 }
 
+/// Locate a working `difft` binary or return an error with install instructions.
 pub fn probe_difft() -> Result<PathBuf, String> {
     if let Ok(path) = env::var("DIFT_PATH") {
         let path = PathBuf::from(&path);

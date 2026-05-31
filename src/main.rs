@@ -14,7 +14,10 @@ use std::time::Duration;
 
 use difft_probe::{difft_command, install_message, probe_difft};
 use model::{display_lines, file_info_message, parse_diff_results, status_label, DiffFile, DisplayLine};
-use segments::{build_segments, text_pixel_width, to_slint_segments, Side};
+use segments::{
+    build_segments, code_brush, plain_line_brush, text_pixel_width, to_slint_segments, Side,
+    GUTTER_LINE,
+};
 
 const BYTE_LIMIT: &str = "32000000";
 
@@ -29,10 +32,12 @@ struct DiffSession {
     files: Vec<DiffFile>,
 }
 
+/// Return the CLI usage line.
 fn usage() -> &'static str {
     "Usage: difft-dir-viewer <dir-a> <dir-b>"
 }
 
+/// Build a usage error message for an invalid CLI argument count.
 fn cli_usage_error(got: usize) -> String {
     let detail = match got {
         0 => "two directory paths are required.".to_string(),
@@ -42,6 +47,7 @@ fn cli_usage_error(got: usize) -> String {
     format!("{}\n\nError: {detail}", usage())
 }
 
+/// Parse exactly two directory paths from the command line.
 fn parse_cli_directories() -> Result<CliDirs, String> {
     let paths: Vec<PathBuf> = env::args_os().skip(1).map(PathBuf::from).collect();
     match paths.len() {
@@ -53,6 +59,7 @@ fn parse_cli_directories() -> Result<CliDirs, String> {
     }
 }
 
+/// Resolve a user path to an absolute path (canonical when possible).
 fn full_path(path: PathBuf) -> PathBuf {
     if let Ok(canonical) = path.canonicalize() {
         return canonical;
@@ -67,6 +74,7 @@ fn full_path(path: PathBuf) -> PathBuf {
         .unwrap_or(path)
 }
 
+/// Run `difft` on two directories and parse the JSON array of changed files.
 fn run_difft(difft: &Path, path_a: &Path, path_b: &Path) -> Result<Vec<DiffFile>, String> {
     let output = difft_command(difft)
         .env("DFT_UNSTABLE", "yes")
@@ -103,6 +111,7 @@ fn line_num(n: Option<u32>) -> i32 {
     n.map(|n| (n + 1) as i32).unwrap_or(-1)
 }
 
+/// Map a `DisplayLine` into a Slint `DiffLine` with syntax segments.
 fn slint_line(line: &DisplayLine) -> DiffLine {
     DiffLine {
         lhs_novel: line.is_novel_lhs,
@@ -111,6 +120,8 @@ fn slint_line(line: &DisplayLine) -> DiffLine {
         rhs_line: line_num(line.rhs_line),
         lhs_plain_text: line.lhs_text.clone().into(),
         rhs_plain_text: line.rhs_text.clone().into(),
+        lhs_plain_color: plain_line_brush(line.is_novel_lhs, Side::Left),
+        rhs_plain_color: plain_line_brush(line.is_novel_rhs, Side::Right),
         lhs_segments: to_slint_segments(&build_segments(
             &line.lhs_text,
             &line.lhs_spans,
@@ -128,6 +139,7 @@ fn slint_line(line: &DisplayLine) -> DiffLine {
     }
 }
 
+/// Widest code line in the diff panes, for horizontal scroll sizing.
 fn max_line_content_width(lines: &[DiffLine]) -> f32 {
     lines
         .iter()
@@ -136,12 +148,14 @@ fn max_line_content_width(lines: &[DiffLine]) -> f32 {
         })
 }
 
+/// Widest changed-file path in the sidebar, for horizontal scroll sizing.
 fn max_file_path_width(files: &[DiffFile]) -> f32 {
     files
         .iter()
         .fold(0.0f32, |max_width, file| max_width.max(text_pixel_width(&file.path)))
 }
 
+/// Build Slint diff lines for one changed file (reads disk for A/D entries).
 fn slint_lines(
     file: &DiffFile,
     path_a: &Path,
@@ -150,10 +164,12 @@ fn slint_lines(
     display_lines(file, path_a, path_b).map(|lines| lines.iter().map(slint_line).collect())
 }
 
+/// Move keyboard focus to the side-by-side code panel.
 fn focus_diff_panel(ui: &MainWindow) {
     ui.invoke_focus_diff_panel();
 }
 
+/// Defer code-panel focus until after the UI has finished updating.
 fn schedule_focus_diff_panel(ui: &MainWindow) {
     let ui_handle = ui.as_weak();
     let _ = slint::Timer::single_shot(Duration::from_millis(50), move || {
@@ -163,6 +179,7 @@ fn schedule_focus_diff_panel(ui: &MainWindow) {
     });
 }
 
+/// Render one changed file in the diff panes and update selection state.
 fn show_diff_file(ui: &MainWindow, file: &DiffFile, index: i32, path_a: &Path, path_b: &Path) {
     match slint_lines(file, path_a, path_b) {
         Ok(lines) => {
@@ -185,6 +202,7 @@ fn show_diff_file(ui: &MainWindow, file: &DiffFile, index: i32, path_a: &Path, p
     }
 }
 
+/// Reset diff panes and the changed-files list to an empty state.
 fn clear_diff_view(ui: &MainWindow) {
     ui.set_max_content_width(0.0);
     ui.set_max_file_path_width(0.0);
@@ -198,6 +216,7 @@ fn clear_diff_view(ui: &MainWindow) {
     ui.set_file_info("".into());
 }
 
+/// Populate the changed-files sidebar and highlight the selected row.
 fn update_file_list(ui: &MainWindow, files: &[DiffFile], selected: i32) {
     let entries: Vec<DiffFileEntry> = files
         .iter()
@@ -213,6 +232,7 @@ fn update_file_list(ui: &MainWindow, files: &[DiffFile], selected: i32) {
     ui.set_selected_file_index(selected);
 }
 
+/// Show the full directory diff: file list plus the first changed file.
 fn show_diff_results(ui: &MainWindow, session: &DiffSession) {
     if session.files.is_empty() {
         clear_diff_view(ui);
@@ -223,6 +243,7 @@ fn show_diff_results(ui: &MainWindow, session: &DiffSession) {
     show_diff_file(&ui, &session.files[0], 0, &session.path_a, &session.path_b);
 }
 
+/// Ensure both CLI paths exist and are directories.
 fn validate_directories(path_a: &Path, path_b: &Path) -> Result<(), String> {
     if !path_a.is_dir() {
         return Err(format!(
@@ -239,6 +260,7 @@ fn validate_directories(path_a: &Path, path_b: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Run directory diff on a background thread and update the UI on completion.
 fn run_diff(
     ui_handle: slint::Weak<MainWindow>,
     difft: Arc<Mutex<Option<PathBuf>>>,
@@ -298,6 +320,11 @@ fn run_diff(
     });
 }
 
+fn init_gutter_colors(ui: &MainWindow) {
+    ui.set_gutter_line_color(code_brush(GUTTER_LINE));
+}
+
+/// Maximize the window on startup and schedule initial focus.
 fn maximize_on_startup(ui: &MainWindow) {
     let ui_handle = ui.as_weak();
     let _ = slint::invoke_from_event_loop(move || {
@@ -308,9 +335,11 @@ fn maximize_on_startup(ui: &MainWindow) {
     });
 }
 
+/// Application entry: parse CLI, wire callbacks, and start the Slint event loop.
 fn main() -> Result<(), slint::PlatformError> {
     let dirs = parse_cli_directories();
     let ui = MainWindow::new()?;
+    init_gutter_colors(&ui);
     maximize_on_startup(&ui);
     clear_diff_view(&ui);
 
@@ -372,6 +401,10 @@ fn main() -> Result<(), slint::PlatformError> {
             );
         });
     }
+
+    ui.on_quit_requested(move || {
+        let _ = slint::quit_event_loop();
+    });
 
     ui.run()
 }
