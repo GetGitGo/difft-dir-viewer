@@ -1,0 +1,755 @@
+import { VerticalBox, HorizontalBox, ListView } from "std-widgets.slint";
+
+export struct TextSegment {
+    text: string,
+    color: brush,
+    bold: bool,
+    italic: bool,
+    x-offset: length,
+}
+
+export struct DiffLine {
+    lhs-novel: bool,
+    rhs-novel: bool,
+    lhs-line: int,
+    rhs-line: int,
+    lhs-plain-text: string,
+    rhs-plain-text: string,
+    lhs-content-width: length,
+    rhs-content-width: length,
+    lhs-segments: [TextSegment],
+    rhs-segments: [TextSegment],
+}
+
+export struct DiffFileEntry {
+    path: string,
+    status: string,
+}
+
+component PathLabel inherits Rectangle {
+    in property <string> path: "";
+
+    background: #44475a;
+    border-radius: 4px;
+    horizontal-stretch: 1;
+    min-width: 1px;
+
+    Text {
+        text: root.path == "" ? "—" : root.path;
+        color: #f8f8f2;
+        font-size: 12px;
+        horizontal-alignment: left;
+        vertical-alignment: center;
+        overflow: elide;
+        x: 8px;
+        width: parent.width - 16px;
+    }
+}
+
+component FileListRow inherits Rectangle {
+    in property <string> path;
+    in property <string> status;
+    in property <bool> selected;
+    in property <length> row-height: 22px;
+    in property <length> path-scroll-x: 0px;
+    in property <length> path-view-width: 0px;
+    in property <length> status-width: 24px;
+    callback activate();
+    callback horizontal-scroll(delta: length);
+    callback path-interacted();
+
+    pure function is-horizontal-scroll(event: PointerScrollEvent) -> bool {
+        (event.delta-x < 0px ? -event.delta-x : event.delta-x) > 0px
+            && (event.delta-x < 0px ? -event.delta-x : event.delta-x)
+                >= (event.delta-y < 0px ? -event.delta-y : event.delta-y)
+    }
+
+    height: root.row-height;
+    background: root.selected ? #44475a : (path-touch.has-hover ? #313340 : #21222c);
+    border-radius: 2px;
+    clip: true;
+
+    path-panel := Rectangle {
+        x: 0;
+        width: root.path-view-width;
+        height: root.row-height;
+        clip: true;
+
+        Text {
+            x: 6px - root.path-scroll-x;
+            height: root.row-height;
+            text: root.path;
+            color: #f8f8f2;
+            font-size: 12px;
+            wrap: no-wrap;
+            horizontal-alignment: left;
+            vertical-alignment: center;
+        }
+
+        path-touch := TouchArea {
+            width: parent.width;
+            height: parent.height;
+
+            clicked => {
+                root.path-interacted();
+                root.activate();
+            }
+
+            scroll-event(event) => {
+                root.path-interacted();
+                if (root.is-horizontal-scroll(event)) {
+                    root.horizontal-scroll(-event.delta-x);
+                    return accept;
+                }
+                return reject;
+            }
+        }
+    }
+
+    status-touch := TouchArea {
+        x: root.path-view-width;
+        width: root.status-width;
+        height: root.row-height;
+
+        clicked => {
+            root.path-interacted();
+            root.activate();
+        }
+
+        Text {
+            width: parent.width - 4px;
+            height: root.row-height;
+            text: root.status;
+            color: #6272a4;
+            font-size: 12px;
+            font-weight: 700;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component ChangedFilesScrollView inherits Rectangle {
+    in property <[DiffFileEntry]> files;
+    in property <length> row-height: 22px;
+    in property <length> max-path-width: 0px;
+    in property <int> selected-index: -1;
+    in-out property <length> file-scroll-x: 0px;
+    callback file-selected(int);
+    callback file-list-interacted();
+
+    private property <length> status-width: 24px;
+    private property <length> path-view-width: max(0px, list.width - root.status-width);
+    private property <length> scroll-max-x: max(0px, root.max-path-width - path-view-width);
+    private property <length> scroll-min-y: min(0px, list.visible-height - list.viewport-height);
+
+    vertical-stretch: 1;
+    clip: true;
+
+    changed max-path-width => {
+        root.file-scroll-x = min(root.file-scroll-x, root.scroll-max-x);
+    }
+
+    changed scroll-max-x => {
+        root.file-scroll-x = min(root.file-scroll-x, root.scroll-max-x);
+    }
+
+    list := ListView {
+        width: parent.width;
+        height: parent.height;
+
+        for file[index] in root.files: FileListRow {
+            path: file.path;
+            status: file.status;
+            selected: index == root.selected-index;
+            row-height: root.row-height;
+            path-scroll-x: root.file-scroll-x;
+            path-view-width: root.path-view-width;
+            status-width: root.status-width;
+            horizontal-scroll(delta) => {
+                root.scroll-file-horizontal(delta);
+            }
+            path-interacted => {
+                root.file-list-interacted();
+            }
+            activate => {
+                root.file-list-interacted();
+                root.file-selected(index);
+            }
+        }
+    }
+
+    public function reset-scroll() {
+        list.viewport-y = 0px;
+        root.file-scroll-x = 0px;
+    }
+
+    public function scroll-file-left() {
+        root.file-scroll-x = max(0px, root.file-scroll-x - 48px);
+    }
+
+    public function scroll-file-right() {
+        root.file-scroll-x = min(root.scroll-max-x, root.file-scroll-x + 48px);
+    }
+
+    public function scroll-file-horizontal(delta: length) {
+        root.file-scroll-x = min(root.scroll-max-x, max(0px, root.file-scroll-x + delta));
+    }
+
+    public function page-up() {
+        list.viewport-y = min(0px, list.viewport-y + list.visible-height);
+    }
+
+    public function page-down() {
+        list.viewport-y = max(scroll-min-y, list.viewport-y - list.visible-height);
+    }
+
+    public function half-page-up() {
+        list.viewport-y = min(0px, list.viewport-y + list.visible-height / 2);
+    }
+
+    public function half-page-down() {
+        list.viewport-y = max(scroll-min-y, list.viewport-y - list.visible-height / 2);
+    }
+
+    public function scroll-to-top() {
+        list.viewport-y = 0px;
+    }
+
+    public function scroll-to-bottom() {
+        list.viewport-y = scroll-min-y;
+    }
+}
+
+component CodeSide inherits Rectangle {
+    in property <int> line-number: -1;
+    in property <string> plain-text;
+    in property <brush> plain-color;
+    in property <[TextSegment]> segments;
+    in property <bool> novel;
+    in property <length> line-height: 20px;
+    in property <length> gutter-width: 44px;
+    in property <length> code-scroll-x: 0px;
+    callback horizontal-scroll(delta: length);
+    callback code-interacted();
+
+    pure function is-horizontal-scroll(event: PointerScrollEvent) -> bool {
+        (event.delta-x < 0px ? -event.delta-x : event.delta-x) > 0px
+            && (event.delta-x < 0px ? -event.delta-x : event.delta-x)
+                >= (event.delta-y < 0px ? -event.delta-y : event.delta-y)
+    }
+
+    private property <brush> row-background: root.novel ? #3b3f52 : #282a36;
+
+    horizontal-stretch: 1;
+    min-width: 1px;
+    height: root.line-height;
+    background: root.row-background;
+    clip: true;
+
+    gutter := Rectangle {
+        x: 0;
+        width: root.gutter-width;
+        height: root.line-height;
+        background: root.row-background;
+
+        Text {
+            x: 0;
+            width: parent.width - 6px;
+            height: root.line-height;
+            text: root.line-number >= 1 ? root.line-number : "";
+            color: #6272a4;
+            font-family: "Courier New";
+            font-size: 12px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+
+    code-panel := Rectangle {
+        x: root.gutter-width;
+        width: parent.width - root.gutter-width;
+        height: root.line-height;
+        background: root.row-background;
+        clip: true;
+
+        Text {
+            x: -root.code-scroll-x;
+            height: root.line-height;
+            text: root.plain-text;
+            color: root.plain-color;
+            font-family: "Courier New";
+            font-size: 12px;
+            wrap: no-wrap;
+            horizontal-alignment: left;
+            vertical-alignment: center;
+            visible: root.plain-text != "" && root.segments.length == 0;
+        }
+
+        for seg in root.segments: Text {
+            x: seg.x-offset - root.code-scroll-x;
+            height: root.line-height;
+            text: seg.text;
+            color: seg.color;
+            font-family: "Courier New";
+            font-size: 12px;
+            font-weight: seg.bold ? 700 : 400;
+            font-italic: seg.italic;
+            vertical-alignment: center;
+        }
+
+        code-scroll-touch := TouchArea {
+            width: parent.width;
+            height: parent.height;
+
+            scroll-event(event) => {
+                root.code-interacted();
+                if (root.is-horizontal-scroll(event)) {
+                    root.horizontal-scroll(-event.delta-x);
+                    return accept;
+                }
+                return reject;
+            }
+        }
+    }
+}
+
+component DiffCodeScrollView inherits Rectangle {
+    in property <length> code-line-height;
+    in property <length> line-number-width;
+    in property <[DiffLine]> lines;
+    in property <length> max-content-width: 0px;
+    in-out property <length> code-scroll-x: 0px;
+    callback code-interacted();
+
+    private property <length> column-code-width: max(0px, list.width / 2 - root.line-number-width);
+    private property <length> scroll-max-x: max(0px, root.max-content-width - column-code-width);
+
+    vertical-stretch: 1;
+    horizontal-stretch: 1;
+    clip: true;
+
+    private property <length> scroll-min-y: min(0px, list.visible-height - list.viewport-height);
+
+    list := ListView {
+        width: parent.width;
+        height: parent.height;
+
+        for line[index] in root.lines: HorizontalBox {
+            height: root.code-line-height;
+            spacing: 0px;
+
+            CodeSide {
+                line-height: root.code-line-height;
+                gutter-width: root.line-number-width;
+                code-scroll-x: root.code-scroll-x;
+                line-number: line.lhs-line;
+                plain-text: line.lhs-plain-text;
+                plain-color: line.lhs-novel ? #ff5555 : #f8f8f2;
+                segments: line.lhs-segments;
+                novel: line.lhs-novel;
+                horizontal-scroll(delta) => {
+                    root.scroll-code-horizontal(delta);
+                }
+                code-interacted => {
+                    root.code-interacted();
+                }
+            }
+
+            CodeSide {
+                line-height: root.code-line-height;
+                gutter-width: root.line-number-width;
+                code-scroll-x: root.code-scroll-x;
+                line-number: line.rhs-line;
+                plain-text: line.rhs-plain-text;
+                plain-color: line.rhs-novel ? #50fa7b : #f8f8f2;
+                segments: line.rhs-segments;
+                novel: line.rhs-novel;
+                horizontal-scroll(delta) => {
+                    root.scroll-code-horizontal(delta);
+                }
+                code-interacted => {
+                    root.code-interacted();
+                }
+            }
+        }
+    }
+
+    changed max-content-width => {
+        root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
+    }
+
+    changed scroll-max-x => {
+        root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
+    }
+
+    public function reset-scroll() {
+        list.viewport-y = 0px;
+        root.code-scroll-x = 0px;
+    }
+
+    public function scroll-code-left() {
+        root.code-scroll-x = max(0px, root.code-scroll-x - 48px);
+    }
+
+    public function scroll-code-right() {
+        root.code-scroll-x = min(root.scroll-max-x, root.code-scroll-x + 48px);
+    }
+
+    public function scroll-code-horizontal(delta: length) {
+        root.code-scroll-x = min(root.scroll-max-x, max(0px, root.code-scroll-x + delta));
+    }
+
+    public function page-up() {
+        list.viewport-y = min(0px, list.viewport-y + list.visible-height);
+    }
+
+    public function page-down() {
+        list.viewport-y = max(scroll-min-y, list.viewport-y - list.visible-height);
+    }
+
+    public function half-page-up() {
+        list.viewport-y = min(0px, list.viewport-y + list.visible-height / 2);
+    }
+
+    public function half-page-down() {
+        list.viewport-y = max(scroll-min-y, list.viewport-y - list.visible-height / 2);
+    }
+
+    public function scroll-to-top() {
+        list.viewport-y = 0px;
+    }
+
+    public function scroll-to-bottom() {
+        list.viewport-y = scroll-min-y;
+    }
+}
+
+export component MainWindow inherits Window {
+    preferred-width: 2560px;
+    preferred-height: 1440px;
+    title: "Difftastic Directory Diff";
+    background: #282a36;
+    forward-focus: root-focus;
+
+    callback file-selected(int);
+
+    in-out property <length> toolbar-height: 28px;
+    in-out property <length> toolbar-gap: 6px;
+    in-out property <length> code-line-height: 20px;
+    in-out property <length> line-number-width: 44px;
+    in-out property <length> file-list-width: 240px;
+    in-out property <length> file-row-height: 22px;
+
+    in-out property <string> path-a: "";
+    in-out property <string> path-b: "";
+    in-out property <string> status-text: "";
+    in-out property <string> file-info: "";
+    in-out property <string> file-list-title: "";
+    in-out property <int> changed-file-count: 0;
+    in-out property <int> selected-file-index: -1;
+    in-out property <[DiffFileEntry]> changed-files;
+    in-out property <[DiffLine]> lines;
+    in-out property <length> code-scroll-x: 0px;
+    in-out property <length> max-content-width: 0px;
+    in-out property <length> file-scroll-x: 0px;
+    in-out property <length> max-file-path-width: 0px;
+    private property <bool> file-list-focused: false;
+    private property <bool> vim-pending-g: false;
+
+    changed lines => {
+        code-scroll.reset-scroll();
+        root.file-list-focused = false;
+        root-focus.focus();
+    }
+
+    changed changed-file-count => {
+        if (root.changed-file-count > 0) {
+            file-list.reset-scroll();
+        }
+    }
+
+    public function focus-diff-panel() {
+        root-focus.focus();
+    }
+
+    public function scroll-code-left() {
+        code-scroll.scroll-code-left();
+    }
+
+    public function scroll-code-right() {
+        code-scroll.scroll-code-right();
+    }
+
+    public function scroll-code-horizontal(delta: length) {
+        code-scroll.scroll-code-horizontal(delta);
+    }
+
+    public function scroll-file-left() {
+        file-list.scroll-file-left();
+    }
+
+    public function scroll-file-right() {
+        file-list.scroll-file-right();
+    }
+
+    public function scroll-file-horizontal(delta: length) {
+        file-list.scroll-file-horizontal(delta);
+    }
+
+    pure function is-scroll-code-left(event: KeyEvent) -> bool {
+        event.text == "h" && !event.modifiers.shift && !root.vim-modifiers(event)
+    }
+
+    pure function is-scroll-code-right(event: KeyEvent) -> bool {
+        event.text == "l" && !event.modifiers.shift && !root.vim-modifiers(event)
+    }
+
+    pure function vim-modifiers(event: KeyEvent) -> bool {
+        event.modifiers.control || event.modifiers.meta
+    }
+
+    pure function is-vim-page-up(event: KeyEvent) -> bool {
+        event.text == Key.PageUp
+            || event.text == "\u{0002}"
+            || (root.vim-modifiers(event) && (event.text == "b" || event.text == "B"))
+    }
+
+    pure function is-vim-page-down(event: KeyEvent) -> bool {
+        event.text == Key.PageDown
+            || event.text == "\u{0006}"
+            || (root.vim-modifiers(event) && (event.text == "f" || event.text == "F"))
+    }
+
+    pure function is-vim-half-page-up(event: KeyEvent) -> bool {
+        event.text == "\u{0015}"
+            || (root.vim-modifiers(event) && (event.text == "u" || event.text == "U"))
+    }
+
+    pure function is-vim-half-page-down(event: KeyEvent) -> bool {
+        event.text == "\u{0004}"
+            || (root.vim-modifiers(event) && (event.text == "d" || event.text == "D"))
+    }
+
+    pure function is-vim-go-bottom(event: KeyEvent) -> bool {
+        event.text == "G"
+            || (event.text == "g" && event.modifiers.shift)
+    }
+
+    pure function is-vim-go-top-g(event: KeyEvent) -> bool {
+        event.text == "g"
+            && !event.modifiers.shift
+            && !root.vim-modifiers(event)
+    }
+
+    root-focus := FocusScope {
+        width: 100%;
+        height: 100%;
+
+        key-pressed(event) => {
+            if (root.file-list-focused) {
+                if (root.is-scroll-code-left(event)) {
+                    root.scroll-file-left();
+                    root.vim-pending-g = false;
+                    return accept;
+                }
+                if (root.is-scroll-code-right(event)) {
+                    root.scroll-file-right();
+                    root.vim-pending-g = false;
+                    return accept;
+                }
+                if (root.is-vim-page-up(event)) {
+                    file-list.page-up();
+                    return accept;
+                }
+                if (root.is-vim-page-down(event)) {
+                    file-list.page-down();
+                    return accept;
+                }
+                if (root.is-vim-half-page-up(event)) {
+                    file-list.half-page-up();
+                    return accept;
+                }
+                if (root.is-vim-half-page-down(event)) {
+                    file-list.half-page-down();
+                    return accept;
+                }
+                if (event.text == Key.Home) {
+                    file-list.scroll-to-top();
+                    root.vim-pending-g = false;
+                    return accept;
+                }
+                if (event.text == Key.End) {
+                    file-list.scroll-to-bottom();
+                    root.vim-pending-g = false;
+                    return accept;
+                }
+                if (root.is-vim-go-bottom(event)) {
+                    file-list.scroll-to-bottom();
+                    root.vim-pending-g = false;
+                    return accept;
+                }
+                if (root.is-vim-go-top-g(event)) {
+                    if (root.vim-pending-g) {
+                        file-list.scroll-to-top();
+                        root.vim-pending-g = false;
+                    } else {
+                        root.vim-pending-g = true;
+                    }
+                    return accept;
+                }
+            } else {
+                if (root.is-scroll-code-left(event)) {
+                    root.scroll-code-left();
+                    root.vim-pending-g = false;
+                    return accept;
+                }
+                if (root.is-scroll-code-right(event)) {
+                    root.scroll-code-right();
+                    root.vim-pending-g = false;
+                    return accept;
+                }
+                if (root.is-vim-page-up(event)) {
+                    code-scroll.page-up();
+                    return accept;
+                }
+                if (root.is-vim-page-down(event)) {
+                    code-scroll.page-down();
+                    return accept;
+                }
+                if (root.is-vim-half-page-up(event)) {
+                    code-scroll.half-page-up();
+                    return accept;
+                }
+                if (root.is-vim-half-page-down(event)) {
+                    code-scroll.half-page-down();
+                    return accept;
+                }
+                if (event.text == Key.Home) {
+                    code-scroll.scroll-to-top();
+                    root.vim-pending-g = false;
+                    return accept;
+                }
+                if (event.text == Key.End) {
+                    code-scroll.scroll-to-bottom();
+                    root.vim-pending-g = false;
+                    return accept;
+                }
+                if (root.is-vim-go-bottom(event)) {
+                    code-scroll.scroll-to-bottom();
+                    root.vim-pending-g = false;
+                    return accept;
+                }
+                if (root.is-vim-go-top-g(event)) {
+                    if (root.vim-pending-g) {
+                        code-scroll.scroll-to-top();
+                        root.vim-pending-g = false;
+                    } else {
+                        root.vim-pending-g = true;
+                    }
+                    return accept;
+                }
+            }
+            root.vim-pending-g = false;
+            return reject;
+        }
+
+        VerticalBox {
+        padding: 6px;
+        spacing: 4px;
+
+        toolbar := HorizontalBox {
+            height: root.toolbar-height;
+            spacing: root.toolbar-gap;
+
+            PathLabel {
+                height: root.toolbar-height;
+                path: root.path-a;
+            }
+
+            PathLabel {
+                height: root.toolbar-height;
+                path: root.path-b;
+            }
+        }
+
+        Text {
+            text: root.status-text;
+            color: #f8f8f2;
+            font-size: 12px;
+            wrap: word-wrap;
+            visible: root.status-text != "";
+        }
+
+        Text {
+            text: root.file-info;
+            color: #bd93f9;
+            font-size: 12px;
+            wrap: word-wrap;
+            visible: root.file-info != "";
+        }
+
+        HorizontalBox {
+            vertical-stretch: 1;
+            spacing: 6px;
+
+            Rectangle {
+                width: root.file-list-width;
+                vertical-stretch: 1;
+                y: -root.file-row-height * 2 / 3;
+                visible: root.changed-file-count > 0;
+                background: #21222c;
+                border-radius: 4px;
+                clip: false;
+
+                VerticalBox {
+                    padding: 6px;
+                    spacing: 4px;
+
+                    Text {
+                        text: root.file-list-title;
+                        color: #6272a4;
+                        font-size: 12px;
+                    }
+
+                    file-list := ChangedFilesScrollView {
+                        vertical-stretch: 1;
+                        row-height: root.file-row-height;
+                        files: root.changed-files;
+                        max-path-width: root.max-file-path-width;
+                        selected-index: root.selected-file-index;
+                        file-scroll-x <=> root.file-scroll-x;
+                        file-list-interacted => {
+                            root.file-list-focused = true;
+                        }
+                        file-selected(index) => {
+                            root.file-selected(index);
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                background: #282a36;
+                border-radius: 4px;
+                clip: true;
+
+                code-scroll := DiffCodeScrollView {
+                    width: parent.width;
+                    height: parent.height;
+                    code-line-height: root.code-line-height;
+                    line-number-width: root.line-number-width;
+                    lines: root.lines;
+                    code-scroll-x <=> root.code-scroll-x;
+                    max-content-width: root.max-content-width;
+                    code-interacted => {
+                        root.file-list-focused = false;
+                    }
+                }
+            }
+        }
+        }
+    }
+}
