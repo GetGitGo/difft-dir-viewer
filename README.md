@@ -71,8 +71,8 @@ The viewer sets `DFT_UNSTABLE=yes` because JSON output is still an **unstable** 
 | Area | Notes |
 |------|--------|
 | GUI | Slint `backend-winit` + `renderer-femtovg` |
-| Window | Borderless (`no-frame`); starts **maximized** (macOS/Linux) or sized to the monitor **work area** (Windows) |
-| macOS | Dock / Cmd+Tab icon via `macos_icon`; `set_maximized(true)` on launch |
+| Window | Borderless (`no-frame`); macOS **native fullscreen**, Linux maximized, Windows **work area** |
+| macOS | Dock / Cmd+Tab icon via `macos_icon`; `macos_edge::fill_screen` (`set_fullscreen`) on launch |
 | Windows | `windows_edge` (`#[cfg(target_os = "windows")]`) — borderless work-area sizing, no extra console in Release |
 | Windows `difft` | `difft.exe`, `where difft`, optional `.exe` on `DIFT_PATH` / `--difft` |
 | Subprocess | `CREATE_NO_WINDOW` so `difft` does not flash a console (Windows) |

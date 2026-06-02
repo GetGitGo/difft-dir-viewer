@@ -6,6 +6,8 @@ mod line_ending;
 mod model;
 mod segments;
 #[cfg(target_os = "macos")]
+mod macos_edge;
+#[cfg(target_os = "macos")]
 mod macos_icon;
 #[cfg(target_os = "windows")]
 mod windows_edge;
@@ -370,14 +372,18 @@ fn init_gutter_colors(ui: &MainWindow) {
     ui.set_gutter_line_color(code_brush(GUTTER_LINE));
 }
 
-#[cfg(target_os = "windows")]
-fn schedule_fill_work_area(ui: &MainWindow) {
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn schedule_fill_screen_edges(ui: &MainWindow) {
     let ui_handle = ui.as_weak();
-    for delay_ms in [0_u64, 50, 200] {
+    for delay_ms in [0_u64, 50, 200, 500, 1000] {
         let ui_handle = ui_handle.clone();
         slint::Timer::single_shot(Duration::from_millis(delay_ms), move || {
             if let Some(ui) = ui_handle.upgrade() {
-                windows_edge::fill_work_area(&ui.window());
+                let window = ui.window();
+                #[cfg(target_os = "windows")]
+                windows_edge::fill_work_area(&window);
+                #[cfg(target_os = "macos")]
+                macos_edge::fill_screen(&window);
             }
         });
     }
@@ -386,19 +392,22 @@ fn schedule_fill_work_area(ui: &MainWindow) {
 /// Maximize the window on startup and schedule initial focus.
 fn maximize_on_startup(ui: &MainWindow) {
     let ui_handle = ui.as_weak();
-    let _ = slint::invoke_from_event_loop(move || {
+    slint::Timer::single_shot(Duration::from_millis(0), move || {
         if let Some(ui) = ui_handle.upgrade() {
             let window = ui.window();
             #[cfg(target_os = "windows")]
             {
                 windows_edge::fill_work_area(&window);
                 windows_edge::install_borderless_hooks(&window);
-                schedule_fill_work_area(&ui);
             }
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "macos")]
+            macos_edge::fill_screen(&window);
+            #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
             {
                 window.set_maximized(true);
             }
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            schedule_fill_screen_edges(&ui);
             schedule_focus_diff_panel(&ui);
         }
     });
@@ -406,7 +415,7 @@ fn maximize_on_startup(ui: &MainWindow) {
 
 #[cfg(target_os = "macos")]
 fn schedule_application_icon() {
-    let _ = slint::invoke_from_event_loop(move || {
+    slint::Timer::single_shot(Duration::from_millis(0), || {
         macos_icon::set_from_png(include_bytes!("../assets/icons/icon-512.png"));
     });
 }
