@@ -3,6 +3,8 @@
 use serde::Deserialize;
 use slint::{Brush, Color, SharedString};
 
+pub const TAB_WIDTH: usize = 4;
+
 /// Syntax highlight category from difft JSON spans.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -106,6 +108,55 @@ fn gap_segment(content: &str, line_novel: bool, side: Side) -> Segment {
     }
 }
 
+fn floor_char_boundary(text: &str, byte_idx: usize) -> usize {
+    let byte_idx = byte_idx.min(text.len());
+    if byte_idx == 0 || text.is_char_boundary(byte_idx) {
+        return byte_idx;
+    }
+    (0..byte_idx)
+        .rfind(|&i| text.is_char_boundary(i))
+        .unwrap_or(0)
+}
+
+fn safe_byte_range(text: &str, start: usize, end: usize) -> (usize, usize) {
+    let start = floor_char_boundary(text, start);
+    let end = floor_char_boundary(text, end).max(start);
+    (start, end)
+}
+
+fn safe_byte_slice(text: &str, start: usize, end: usize) -> &str {
+    let (start, end) = safe_byte_range(text, start, end);
+    &text[start..end]
+}
+
+fn display_col_to_byte_offset(display: &str, col: u32) -> u32 {
+    let mut current = 0u32;
+    for (byte_idx, _) in display.char_indices() {
+        if current == col {
+            return byte_idx as u32;
+        }
+        current += 1;
+    }
+    display.len() as u32
+}
+
+/// Map a byte offset in the original line to a display column after tab expansion.
+fn byte_offset_to_display_col(line: &str, byte_offset: usize) -> u32 {
+    let byte_offset = floor_char_boundary(line, byte_offset);
+    expand_tabs_display(&line[..byte_offset])
+        .chars()
+        .count() as u32
+}
+
+fn slice_display_by_cols(display: &str, start_col: u32, end_col: u32) -> String {
+    if start_col >= end_col {
+        return String::new();
+    }
+    let start_byte = display_col_to_byte_offset(display, start_col) as usize;
+    let end_byte = display_col_to_byte_offset(display, end_col) as usize;
+    safe_byte_slice(display, start_byte, end_byte).to_owned()
+}
+
 /// Merge adjacent segments that share the same style.
 fn merge_segments(mut segments: Vec<Segment>) -> Vec<Segment> {
     if segments.len() < 2 {
@@ -148,17 +199,21 @@ pub fn build_segments(
         let start = span.start as usize;
         let end = span.end as usize;
         if start > pos && start <= text.len() {
-            segments.push(gap_segment(&text[pos..start], line_novel, side));
+            segments.push(gap_segment(
+                safe_byte_slice(text, pos, start),
+                line_novel,
+                side,
+            ));
         }
         if start < text.len() {
             let content = if span.content.is_empty() {
-                &text[start..end.min(text.len())]
+                safe_byte_slice(text, start, end.min(text.len())).to_owned()
             } else {
-                span.content.as_str()
+                expand_tabs_display(&span.content)
             };
             if !content.is_empty() {
                 segments.push(style_segment(
-                    content,
+                    &content,
                     span.highlight,
                     span.is_novel,
                     side,
@@ -169,10 +224,65 @@ pub fn build_segments(
     }
 
     if pos < text.len() {
-        segments.push(gap_segment(&text[pos..], line_novel, side));
+        segments.push(gap_segment(
+            safe_byte_slice(text, pos, text.len()),
+            line_novel,
+            side,
+        ));
     }
 
     merge_segments(segments)
+}
+
+/// Expand tabs to spaces for display. Slint renders `\t` as missing-glyph boxes.
+pub fn expand_tabs_display(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut col = 0usize;
+    for ch in line.chars() {
+        if ch == '\t' {
+            let spaces = TAB_WIDTH - (col % TAB_WIDTH);
+            out.extend(std::iter::repeat_n(' ', spaces));
+            col += spaces;
+        } else {
+            out.push(ch);
+            col += 1;
+        }
+    }
+    out
+}
+
+/// Remap span byte offsets after tab expansion and refresh span text slices.
+pub fn remap_spans_for_tabs(line: &str, spans: &[TextSpan]) -> Vec<TextSpan> {
+    let display = expand_tabs_display(line);
+    spans
+        .iter()
+        .map(|span| {
+            let start_col = byte_offset_to_display_col(line, span.start as usize);
+            let end_col = byte_offset_to_display_col(line, span.end as usize);
+            let start = display_col_to_byte_offset(&display, start_col);
+            let end = display_col_to_byte_offset(&display, end_col);
+            let content = if span.content.is_empty() {
+                slice_display_by_cols(&display, start_col, end_col)
+            } else {
+                expand_tabs_display(&span.content)
+            };
+            TextSpan {
+                start,
+                end,
+                content,
+                ..span.clone()
+            }
+        })
+        .collect()
+}
+
+pub fn prepare_display_line(line: &str, spans: &[TextSpan]) -> (String, Vec<TextSpan>) {
+    if !line.contains('\t') {
+        return (line.to_owned(), spans.to_vec());
+    }
+    let display = expand_tabs_display(line);
+    let spans = remap_spans_for_tabs(line, spans);
+    (display, spans)
 }
 
 /// Parse a `#rrggbb` hex string into a Slint brush.
@@ -187,7 +297,7 @@ fn brush_from_hex(hex: &str) -> Brush {
 }
 
 /// Approximate advance width for "Courier New" 12px in the viewer.
-pub const CHAR_WIDTH: f32 = 7.2;
+pub const CHAR_WIDTH: f32 = 7.85;
 
 pub const GUTTER_LINE: &str = "#6272a4";
 
@@ -221,9 +331,8 @@ pub fn plain_line_brush(novel: bool, side: Side) -> Brush {
     code_brush(hex)
 }
 
-/// Estimate rendered width of monospace text for horizontal scrolling.
 pub fn text_pixel_width(text: &str) -> f32 {
-    text.chars().count() as f32 * CHAR_WIDTH
+    expand_tabs_display(text).chars().count() as f32 * CHAR_WIDTH
 }
 
 /// Convert styled segments into Slint `TextSegment` models with x offsets.
@@ -274,5 +383,68 @@ mod tests {
     fn adjust_brightness_clamps_to_byte_range() {
         assert_eq!(adjust_brightness_hex("#ffffff", 2.0), "#ffffff");
         assert_eq!(adjust_brightness_hex("#000000", 0.1), "#000000");
+    }
+
+    #[test]
+    fn remap_spans_after_tab_expansion() {
+        let line = "\tif x";
+        let spans = vec![TextSpan {
+            start: 1,
+            end: 3,
+            content: "if".into(),
+            highlight: Highlight::Keyword,
+            is_novel: false,
+        }];
+        let (display, remapped) = prepare_display_line(line, &spans);
+        assert_eq!(display, "    if x");
+        assert_eq!(remapped[0].start, 4);
+        assert_eq!(remapped[0].end, 6);
+        assert_eq!(remapped[0].content, "if");
+    }
+
+    #[test]
+    fn remap_spans_with_utf8_after_tab_expansion() {
+        let line = "\t// 设为输入";
+        let spans = vec![TextSpan {
+            start: 1,
+            end: 3,
+            content: String::new(),
+            highlight: Highlight::Comment,
+            is_novel: false,
+        }];
+        let (display, remapped) = prepare_display_line(line, &spans);
+        assert_eq!(display, "    // 设为输入");
+        assert_eq!(remapped[0].content, "//");
+        let segments = build_segments(&display, &remapped, false, Side::Left);
+        assert!(!segments.is_empty());
+    }
+
+    #[test]
+    fn build_segments_tolerates_non_boundary_byte_offsets() {
+        let line = "    // 设为输入";
+        let spans = vec![TextSpan {
+            start: 10,
+            end: 11,
+            content: String::new(),
+            highlight: Highlight::Comment,
+            is_novel: false,
+        }];
+        let segments = build_segments(line, &spans, false, Side::Left);
+        assert!(!segments.is_empty());
+    }
+
+    #[test]
+    fn build_segments_expands_tabs_in_span_content() {
+        let line = "    if x";
+        let spans = vec![TextSpan {
+            start: 0,
+            end: 1,
+            content: "\tif".into(),
+            highlight: Highlight::Keyword,
+            is_novel: false,
+        }];
+        let segments = build_segments(line, &spans, false, Side::Left);
+        assert!(segments.iter().all(|seg| !seg.text.contains('\t')));
+        assert!(segments.iter().any(|seg| seg.text.starts_with("    if")));
     }
 }

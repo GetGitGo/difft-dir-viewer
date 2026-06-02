@@ -25,7 +25,6 @@ pub fn difft_command(path: &Path) -> Command {
     subprocess_command(path)
 }
 
-/// Platform-specific `difft` executable name.
 fn difft_binary_name() -> &'static str {
     if cfg!(windows) {
         "difft.exe"
@@ -34,7 +33,6 @@ fn difft_binary_name() -> &'static str {
     }
 }
 
-/// Return a path and, on Windows, the same path with `.exe` appended.
 fn difft_path_variants(path: PathBuf) -> Vec<PathBuf> {
     let mut paths = vec![path.clone()];
     if env::consts::EXE_SUFFIX.is_empty() || path.extension().is_some() {
@@ -49,7 +47,6 @@ fn difft_path_variants(path: PathBuf) -> Vec<PathBuf> {
     paths
 }
 
-/// Return true if `difft --version` succeeds for this binary.
 fn difft_works(path: &Path) -> bool {
     difft_command(path)
         .arg("--version")
@@ -58,7 +55,6 @@ fn difft_works(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Return the first candidate path that exists and passes `difft_works`.
 fn first_working_path(paths: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
     for path in paths {
         if path.is_file() && difft_works(&path) {
@@ -68,9 +64,57 @@ fn first_working_path(paths: impl IntoIterator<Item = PathBuf>) -> Option<PathBu
     None
 }
 
-/// Collect lookup locations: `DIFT_PATH`, next to this exe, then bare name on PATH.
+fn push_unique_base(bases: &mut Vec<PathBuf>, base: PathBuf) {
+    if bases.iter().any(|existing| existing == &base) {
+        return;
+    }
+    bases.push(base);
+}
+
+/// Collect directories that may contain a `difftastic/` or `difft-file-viewer/difftastic/` tree.
+fn difftastic_candidate_bases() -> Vec<PathBuf> {
+    let mut bases = Vec::new();
+
+    if let Ok(cwd) = env::current_dir() {
+        push_unique_base(&mut bases, cwd.clone());
+        if let Some(parent) = cwd.parent() {
+            push_unique_base(&mut bases, parent.to_path_buf());
+        }
+    }
+
+    if let Ok(exe) = env::current_exe() {
+        let mut dir = exe.parent().map(|path| path.to_path_buf());
+        for _ in 0..5 {
+            let Some(current) = dir else {
+                break;
+            };
+            push_unique_base(&mut bases, current.clone());
+            dir = current.parent().map(|path| path.to_path_buf());
+        }
+    }
+
+    bases
+}
+
+fn push_difftastic_build_paths(paths: &mut Vec<PathBuf>, base: &Path) {
+    for profile in ["debug", "release"] {
+        for root in ["difftastic", "difft-file-viewer/difftastic"] {
+            paths.push(
+                base.join(root)
+                    .join("target")
+                    .join(profile)
+                    .join(difft_binary_name()),
+            );
+        }
+    }
+}
+
 fn candidate_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
+
+    for base in difftastic_candidate_bases() {
+        push_difftastic_build_paths(&mut paths, &base);
+    }
 
     if let Ok(path) = env::var("DIFT_PATH") {
         paths.extend(difft_path_variants(PathBuf::from(path)));
@@ -87,7 +131,6 @@ fn candidate_paths() -> Vec<PathBuf> {
     paths
 }
 
-/// Resolve `difft` via `which` / `where` when direct candidates fail.
 fn path_lookup_hint() -> Option<PathBuf> {
     let lookup = subprocess_command(if cfg!(windows) { "where" } else { "which" })
         .arg("difft")
@@ -106,7 +149,6 @@ fn path_lookup_hint() -> Option<PathBuf> {
 
 const VERIFY_STEP: &str = "\nVerification:\n  difft --version";
 
-/// Platform-specific install hints shown when `difft` is missing.
 pub fn install_message() -> String {
     if cfg!(target_os = "macos") {
         format!(
@@ -114,9 +156,9 @@ pub fn install_message() -> String {
              \n\
               brew install difftastic{VERIFY_STEP}\n\
              \n\
-             Or build from this repository:\n\
-              cargo build -p difftastic\n\
-              export DIFT_PATH=\"$(pwd)/target/debug/difft\"\n\
+             Or build difftastic from the sibling difft-file-viewer repo:\n\
+              cargo build --manifest-path difft-file-viewer/difftastic/Cargo.toml\n\
+              difft-dir-viewer dir-a dir-b\n\
              \n\
              Or set DIFT_PATH to the full path of an existing difft binary."
         )
@@ -128,9 +170,9 @@ pub fn install_message() -> String {
               winget install Wilfred.difftastic\n\
               choco install difftastic{VERIFY_STEP}\n\
              \n\
-             Or build from this repository:\n\
-              cargo build -p difftastic\n\
-              set DIFT_PATH=%CD%\\target\\debug\\difft.exe\n\
+             Or build difftastic from the sibling difft-file-viewer repo:\n\
+              cargo build --manifest-path difft-file-viewer/difftastic/Cargo.toml\n\
+              difft-dir-viewer dir-a dir-b\n\
              \n\
              Or set DIFT_PATH to the full path of an existing difft.exe."
         )
@@ -143,16 +185,29 @@ pub fn install_message() -> String {
               sudo dnf install difftastic      # Fedora\n\
               sudo pkg install difftastic      # FreeBSD{VERIFY_STEP}\n\
              \n\
-             Or build from this repository:\n\
-              cargo build -p difftastic\n\
-              export DIFT_PATH=\"$(pwd)/target/debug/difft\"\n\
+             Or build difftastic from the sibling difft-file-viewer repo:\n\
+              cargo build --manifest-path difft-file-viewer/difftastic/Cargo.toml\n\
+              difft-dir-viewer dir-a dir-b\n\
              \n\
              Or set DIFT_PATH to the full path of an existing difft binary."
         )
     }
 }
 
-/// Locate a working `difft` binary or return an error with install instructions.
+pub fn resolve_difft(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
+    if let Some(path) = explicit {
+        if let Some(resolved) = first_working_path(difft_path_variants(path.clone())) {
+            return Ok(resolved);
+        }
+        return Err(format!(
+            "--difft does not point to a working difft binary: {}\n\n{}",
+            path.display(),
+            install_message()
+        ));
+    }
+    probe_difft()
+}
+
 pub fn probe_difft() -> Result<PathBuf, String> {
     if let Ok(path) = env::var("DIFT_PATH") {
         let path = PathBuf::from(&path);
@@ -210,5 +265,25 @@ mod tests {
         } else {
             assert_eq!(difft_binary_name(), "difft");
         }
+    }
+
+    #[test]
+    fn difftastic_candidate_bases_include_cwd_parent() {
+        let cwd = env::current_dir().unwrap();
+        let bases = difftastic_candidate_bases();
+        assert!(bases.contains(&cwd));
+        if let Some(parent) = cwd.parent() {
+            assert!(bases.contains(&parent.to_path_buf()));
+        }
+    }
+
+    #[test]
+    fn push_difftastic_build_paths_includes_sibling_repo() {
+        let mut paths = Vec::new();
+        push_difftastic_build_paths(&mut paths, Path::new("/work"));
+        assert!(paths.contains(&PathBuf::from(format!(
+            "/work/difft-file-viewer/difftastic/target/debug/{}",
+            difft_binary_name()
+        ))));
     }
 }

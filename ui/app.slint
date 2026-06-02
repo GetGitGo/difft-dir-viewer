@@ -1,5 +1,53 @@
 import { VerticalBox, HorizontalBox, ListView } from "std-widgets.slint";
 
+/// Wheel/trackpad scrolling with velocity decay (keyboard/page keys stay instant via set-instant).
+component SmoothScroll1D {
+    in-out property <length> offset: 0px;
+    in property <length> min-offset: 0px;
+    in property <length> max-offset: 0px;
+
+    private property <float> velocity: 0;
+    private property <bool> running: false;
+    private property <float> friction: 0.86;
+    private property <float> wheel-gain: 0.55;
+
+    changed min-offset => {
+        root.offset = root.clamp-offset(root.offset);
+    }
+
+    changed max-offset => {
+        root.offset = root.clamp-offset(root.offset);
+    }
+
+    pure function clamp-offset(value: length) -> length {
+        min(root.max-offset, max(root.min-offset, value))
+    }
+
+    tick := Timer {
+        interval: 16ms;
+        running: root.running;
+        triggered => {
+            root.offset = root.clamp-offset(root.offset + root.velocity * 1px);
+            root.velocity = root.velocity * root.friction;
+            if (root.velocity > -0.35 && root.velocity < 0.35) {
+                root.velocity = 0;
+                root.running = false;
+            }
+        }
+    }
+
+    public function add-impulse(delta: length) {
+        root.velocity = root.velocity + (delta / 1px) * root.wheel-gain;
+        root.running = true;
+    }
+
+    public function set-instant(value: length) {
+        root.velocity = 0;
+        root.running = false;
+        root.offset = root.clamp-offset(value);
+    }
+}
+
 export struct TextSegment {
     text: string,
     color: brush,
@@ -30,9 +78,9 @@ export struct DiffFileEntry {
 
 component PathLabel inherits Rectangle {
     in property <string> path: "";
+    in property <length> text-gutter: 4px;
 
     background: #44475a;
-    border-radius: 4px;
     horizontal-stretch: 1;
     min-width: 1px;
 
@@ -43,8 +91,8 @@ component PathLabel inherits Rectangle {
         horizontal-alignment: left;
         vertical-alignment: center;
         overflow: elide;
-        x: 8px;
-        width: parent.width - 16px;
+        x: root.text-gutter;
+        width: parent.width - 2 * root.text-gutter;
     }
 }
 
@@ -52,12 +100,14 @@ component FileListRow inherits Rectangle {
     in property <string> path;
     in property <string> status;
     in property <bool> selected;
-    in property <length> row-height: 22px;
+    in property <length> row-height: 16px;
     in property <length> path-scroll-x: 0px;
     in property <length> path-view-width: 0px;
     in property <length> status-width: 28px;
+    in property <length> text-gutter: 4px;
     callback activate();
     callback horizontal-scroll(delta: length);
+    callback vertical-scroll(delta: length);
     callback path-interacted();
 
     pure function is-horizontal-scroll(event: PointerScrollEvent) -> bool {
@@ -68,7 +118,6 @@ component FileListRow inherits Rectangle {
 
     height: root.row-height;
     background: root.selected ? #44475a : (path-touch.has-hover ? #313340 : #21222c);
-    border-radius: 2px;
     clip: false;
 
     path-panel := Rectangle {
@@ -78,7 +127,7 @@ component FileListRow inherits Rectangle {
         clip: true;
 
         Text {
-            x: 6px - root.path-scroll-x;
+            x: root.text-gutter - root.path-scroll-x;
             height: root.row-height;
             text: root.path;
             color: #f8f8f2;
@@ -101,6 +150,10 @@ component FileListRow inherits Rectangle {
                 root.path-interacted();
                 if (root.is-horizontal-scroll(event)) {
                     root.horizontal-scroll(-event.delta-x);
+                    return accept;
+                }
+                if (event.delta-y != 0px) {
+                    root.vertical-scroll(event.delta-y);
                     return accept;
                 }
                 return reject;
@@ -134,7 +187,7 @@ component FileListRow inherits Rectangle {
 
 component ChangedFilesScrollView inherits Rectangle {
     in property <[DiffFileEntry]> files;
-    in property <length> row-height: 22px;
+    in property <length> row-height: 16px;
     in property <length> max-path-width: 0px;
     in property <int> selected-index: -1;
     in-out property <length> file-scroll-x: 0px;
@@ -142,28 +195,21 @@ component ChangedFilesScrollView inherits Rectangle {
     callback file-list-interacted();
 
     private property <length> status-width: 28px;
-    private property <length> scrollbar-gutter: 10px;
     private property <length> path-view-width: max(0px, list.width - root.status-width);
     private property <length> scroll-max-x: max(0px, root.max-path-width - path-view-width);
-    private property <length> scroll-min-y: min(0px, list.visible-height - list.viewport-height);
+    private property <length> scroll-min-y: min(0px, list.visible-height - list.viewport-height - root.scroll-bottom-padding);
+    private property <length> scroll-bottom-padding: root.row-height;
 
     vertical-stretch: 1;
     clip: true;
-
-    changed max-path-width => {
-        root.file-scroll-x = min(root.file-scroll-x, root.scroll-max-x);
-    }
-
-    changed scroll-max-x => {
-        root.file-scroll-x = min(root.file-scroll-x, root.scroll-max-x);
-    }
+    background: #21222c;
 
     list := ListView {
-        width: parent.width - root.scrollbar-gutter;
-        height: parent.height;
+        width: parent.width;
+        height: parent.height - root.scroll-bottom-padding;
 
         for file[index] in root.files: FileListRow {
-            width: list.width;
+            width: list.viewport-width;
             path: file.path;
             status: file.status;
             selected: index == root.selected-index;
@@ -173,6 +219,9 @@ component ChangedFilesScrollView inherits Rectangle {
             status-width: root.status-width;
             horizontal-scroll(delta) => {
                 root.scroll-file-horizontal(delta);
+            }
+            vertical-scroll(delta) => {
+                smooth_y.add-impulse(delta);
             }
             path-interacted => {
                 root.file-list-interacted();
@@ -184,45 +233,71 @@ component ChangedFilesScrollView inherits Rectangle {
         }
     }
 
+    smooth_y := SmoothScroll1D {
+        offset <=> list.viewport-y;
+        min-offset: root.scroll-min-y;
+        max-offset: 0px;
+    }
+
+    smooth_x := SmoothScroll1D {
+        offset <=> root.file-scroll-x;
+        min-offset: 0px;
+        max-offset: root.scroll-max-x;
+    }
+
+    changed max-path-width => {
+        smooth_x.offset = min(smooth_x.offset, root.scroll-max-x);
+    }
+
+    changed scroll-max-x => {
+        smooth_x.max-offset = root.scroll-max-x;
+        smooth_x.offset = min(smooth_x.offset, root.scroll-max-x);
+    }
+
+    changed scroll-min-y => {
+        smooth_y.min-offset = root.scroll-min-y;
+        smooth_y.offset = max(root.scroll-min-y, smooth_y.offset);
+    }
+
     public function reset-scroll() {
-        list.viewport-y = 0px;
-        root.file-scroll-x = 0px;
+        smooth_y.set-instant(0px);
+        smooth_x.set-instant(0px);
     }
 
     public function scroll-file-left() {
-        root.file-scroll-x = max(0px, root.file-scroll-x - 48px);
+        smooth_x.set-instant(max(0px, root.file-scroll-x - 48px));
     }
 
     public function scroll-file-right() {
-        root.file-scroll-x = min(root.scroll-max-x, root.file-scroll-x + 48px);
+        smooth_x.set-instant(min(root.scroll-max-x, root.file-scroll-x + 48px));
     }
 
     public function scroll-file-horizontal(delta: length) {
-        root.file-scroll-x = min(root.scroll-max-x, max(0px, root.file-scroll-x + delta));
+        smooth_x.add-impulse(delta);
     }
 
     public function page-up() {
-        list.viewport-y = min(0px, list.viewport-y + list.visible-height);
+        smooth_y.set-instant(min(0px, list.viewport-y + list.visible-height));
     }
 
     public function page-down() {
-        list.viewport-y = max(scroll-min-y, list.viewport-y - list.visible-height);
+        smooth_y.set-instant(max(scroll-min-y, list.viewport-y - list.visible-height));
     }
 
     public function half-page-up() {
-        list.viewport-y = min(0px, list.viewport-y + list.visible-height / 2);
+        smooth_y.set-instant(min(0px, list.viewport-y + list.visible-height / 2));
     }
 
     public function half-page-down() {
-        list.viewport-y = max(scroll-min-y, list.viewport-y - list.visible-height / 2);
+        smooth_y.set-instant(max(scroll-min-y, list.viewport-y - list.visible-height / 2));
     }
 
     public function scroll-to-top() {
-        list.viewport-y = 0px;
+        smooth_y.set-instant(0px);
     }
 
     public function scroll-to-bottom() {
-        list.viewport-y = scroll-min-y;
+        smooth_y.set-instant(scroll-min-y);
     }
 }
 
@@ -232,12 +307,13 @@ component CodeSide inherits Rectangle {
     in property <brush> plain-color;
     in property <[TextSegment]> segments;
     in property <bool> novel;
-    in property <length> line-height: 20px;
+    in property <length> line-height: 16px;
     in property <length> code-font-size: 12px;
     in property <brush> gutter-line-color: #6272a4;
     in property <length> gutter-width: 44px;
     in property <length> code-scroll-x: 0px;
     callback horizontal-scroll(delta: length);
+    callback vertical-scroll(delta: length);
     callback code-interacted();
 
     pure function is-horizontal-scroll(event: PointerScrollEvent) -> bool {
@@ -266,7 +342,7 @@ component CodeSide inherits Rectangle {
             height: root.line-height;
             text: root.line-number >= 1 ? root.line-number : "";
             color: root.gutter-line-color;
-            font-family: "monospace";
+            font-family: "Courier New";
             font-size: root.code-font-size;
             font-weight: 700;
             horizontal-alignment: right;
@@ -286,7 +362,7 @@ component CodeSide inherits Rectangle {
             height: root.line-height;
             text: root.plain-text;
             color: root.plain-color;
-            font-family: "monospace";
+            font-family: "Courier New";
             font-size: root.code-font-size;
             font-weight: 700;
             wrap: no-wrap;
@@ -300,7 +376,7 @@ component CodeSide inherits Rectangle {
             height: root.line-height;
             text: seg.text;
             color: seg.color;
-            font-family: "monospace";
+            font-family: "Courier New";
             font-size: root.code-font-size;
             font-weight: 700;
             font-italic: seg.italic;
@@ -315,6 +391,10 @@ component CodeSide inherits Rectangle {
                 root.code-interacted();
                 if (root.is-horizontal-scroll(event)) {
                     root.horizontal-scroll(-event.delta-x);
+                    return accept;
+                }
+                if (event.delta-y != 0px) {
+                    root.vertical-scroll(event.delta-y);
                     return accept;
                 }
                 return reject;
@@ -336,18 +416,21 @@ component DiffCodeScrollView inherits Rectangle {
     private property <length> column-code-width: max(0px, list.width / 2 - root.line-number-width);
     private property <length> scaled-max-content-width: root.max-content-width * root.code-font-size / 12px;
     private property <length> scroll-max-x: max(0px, root.scaled-max-content-width - column-code-width);
+    private property <length> scroll-bottom-padding: root.code-line-height;
 
     vertical-stretch: 1;
     horizontal-stretch: 1;
     clip: true;
+    background: #282a36;
 
-    private property <length> scroll-min-y: min(0px, list.visible-height - list.viewport-height);
+    private property <length> scroll-min-y: min(0px, list.visible-height - list.viewport-height - root.scroll-bottom-padding);
 
     list := ListView {
         width: parent.width;
-        height: parent.height;
+        height: parent.height - root.scroll-bottom-padding;
 
         for line[index] in root.lines: HorizontalBox {
+            width: list.viewport-width;
             height: root.code-line-height;
             spacing: 0px;
 
@@ -364,6 +447,9 @@ component DiffCodeScrollView inherits Rectangle {
                 novel: line.lhs-novel;
                 horizontal-scroll(delta) => {
                     root.scroll-code-horizontal(delta);
+                }
+                vertical-scroll(delta) => {
+                    smooth_y.add-impulse(delta);
                 }
                 code-interacted => {
                     root.code-interacted();
@@ -384,6 +470,9 @@ component DiffCodeScrollView inherits Rectangle {
                 horizontal-scroll(delta) => {
                     root.scroll-code-horizontal(delta);
                 }
+                vertical-scroll(delta) => {
+                    smooth_y.add-impulse(delta);
+                }
                 code-interacted => {
                     root.code-interacted();
                 }
@@ -391,57 +480,75 @@ component DiffCodeScrollView inherits Rectangle {
         }
     }
 
+    smooth_y := SmoothScroll1D {
+        offset <=> list.viewport-y;
+        min-offset: root.scroll-min-y;
+        max-offset: 0px;
+    }
+
+    smooth_x := SmoothScroll1D {
+        offset <=> root.code-scroll-x;
+        min-offset: 0px;
+        max-offset: root.scroll-max-x;
+    }
+
     changed max-content-width => {
-        root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
+        smooth_x.offset = min(smooth_x.offset, root.scroll-max-x);
     }
 
     changed code-font-size => {
-        root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
+        smooth_x.offset = min(smooth_x.offset, root.scroll-max-x);
     }
 
     changed scroll-max-x => {
-        root.code-scroll-x = min(root.code-scroll-x, root.scroll-max-x);
+        smooth_x.max-offset = root.scroll-max-x;
+        smooth_x.offset = min(smooth_x.offset, root.scroll-max-x);
+    }
+
+    changed scroll-min-y => {
+        smooth_y.min-offset = root.scroll-min-y;
+        smooth_y.offset = max(root.scroll-min-y, smooth_y.offset);
     }
 
     public function reset-scroll() {
-        list.viewport-y = 0px;
-        root.code-scroll-x = 0px;
+        smooth_y.set-instant(0px);
+        smooth_x.set-instant(0px);
     }
 
     public function scroll-code-left() {
-        root.code-scroll-x = max(0px, root.code-scroll-x - root.code-font-size * 48 / 12);
+        smooth_x.set-instant(max(0px, root.code-scroll-x - root.code-font-size * 48 / 12));
     }
 
     public function scroll-code-right() {
-        root.code-scroll-x = min(root.scroll-max-x, root.code-scroll-x + root.code-font-size * 48 / 12);
+        smooth_x.set-instant(min(root.scroll-max-x, root.code-scroll-x + root.code-font-size * 48 / 12));
     }
 
     public function scroll-code-horizontal(delta: length) {
-        root.code-scroll-x = min(root.scroll-max-x, max(0px, root.code-scroll-x + delta));
+        smooth_x.add-impulse(delta);
     }
 
     public function page-up() {
-        list.viewport-y = min(0px, list.viewport-y + list.visible-height);
+        smooth_y.set-instant(min(0px, list.viewport-y + list.visible-height));
     }
 
     public function page-down() {
-        list.viewport-y = max(scroll-min-y, list.viewport-y - list.visible-height);
+        smooth_y.set-instant(max(scroll-min-y, list.viewport-y - list.visible-height));
     }
 
     public function half-page-up() {
-        list.viewport-y = min(0px, list.viewport-y + list.visible-height / 2);
+        smooth_y.set-instant(min(0px, list.viewport-y + list.visible-height / 2));
     }
 
     public function half-page-down() {
-        list.viewport-y = max(scroll-min-y, list.viewport-y - list.visible-height / 2);
+        smooth_y.set-instant(max(scroll-min-y, list.viewport-y - list.visible-height / 2));
     }
 
     public function scroll-to-top() {
-        list.viewport-y = 0px;
+        smooth_y.set-instant(0px);
     }
 
     public function scroll-to-bottom() {
-        list.viewport-y = scroll-min-y;
+        smooth_y.set-instant(scroll-min-y);
     }
 }
 
@@ -449,20 +556,23 @@ export component MainWindow inherits Window {
     preferred-width: 2560px;
     preferred-height: 1440px;
     title: "difft-dir-viewer";
+    no-frame: true;
+    resize-border-width: 0px;
+    icon: @image-url("../assets/icons/icon-256.png");
     background: #282a36;
     forward-focus: root-focus;
 
     callback file-selected(int);
     callback quit-requested();
 
-    in-out property <length> toolbar-height: 28px;
-    in-out property <length> toolbar-gap: 6px;
     in-out property <length> code-font-size: 12px;
     in-out property <brush> gutter-line-color: #6272a4;
-    private property <length> code-line-height: root.code-font-size * 20 / 12;
-    private property <length> line-number-width: root.code-font-size * 44 / 12;
+    private property <length> code-line-height: root.code-font-size + 4px;
+    private property <length> toolbar-height: root.code-line-height;
+    in-out property <length> toolbar-gap: 1px;
+    private property <length> text-gutter: 4px;
+    private property <length> line-number-width: root.code-font-size * 48 / 12;
     in-out property <length> file-list-width: 240px;
-    in-out property <length> file-row-height: 22px;
 
     in-out property <string> path-a: "";
     in-out property <string> path-b: "";
@@ -479,6 +589,8 @@ export component MainWindow inherits Window {
     in-out property <length> max-file-path-width: 0px;
     private property <bool> file-list-focused: false;
     private property <bool> vim-pending-g: false;
+    private property <bool> show-status-bar: root.status-text != "" || root.file-info != "";
+    private property <length> status-bar-height: 72px;
 
     changed lines => {
         code-scroll.reset-scroll();
@@ -686,119 +798,170 @@ export component MainWindow inherits Window {
                 }
             }
             root.vim-pending-g = false;
+            if (event.text == Key.Escape) {
+                root.file-list-focused = false;
+                return accept;
+            }
             if (root.is-quit(event)) {
                 root.quit-requested();
                 return accept;
             }
             if (root.is-code-font-larger(event)) {
                 root.code-font-size = min(24px, root.code-font-size + 1px);
+                root.vim-pending-g = false;
                 return accept;
             }
             if (root.is-code-font-smaller(event)) {
                 root.code-font-size = max(8px, root.code-font-size - 1px);
+                root.vim-pending-g = false;
                 return accept;
             }
             return reject;
         }
 
-        VerticalBox {
-        padding: 6px;
-        spacing: 4px;
+        diff-panel := Rectangle {
+            width: 100%;
+            height: 100%;
 
-        toolbar := HorizontalBox {
-            height: root.toolbar-height;
-            spacing: root.toolbar-gap;
+            content-row := HorizontalBox {
+                y: root.toolbar-height;
+                width: parent.width;
+                height: parent.height - root.toolbar-height;
+                padding: 0px;
+                spacing: 0px;
 
-            PathLabel {
-                height: root.toolbar-height;
-                path: root.path-a;
+                Rectangle {
+                    width: root.file-list-width;
+                    height: parent.height;
+                    visible: root.changed-file-count > 0;
+                    background: #21222c;
+                    clip: true;
+
+                    VerticalBox {
+                        padding: 0px;
+                        width: parent.width;
+                        height: parent.height;
+
+                        file-list := ChangedFilesScrollView {
+                            vertical-stretch: 1;
+                            row-height: root.code-line-height;
+                            files: root.changed-files;
+                            max-path-width: root.max-file-path-width;
+                            selected-index: root.selected-file-index;
+                            file-scroll-x <=> root.file-scroll-x;
+                            file-list-interacted => {
+                                root.file-list-focused = true;
+                            }
+                            file-selected(index) => {
+                                root.file-selected(index);
+                            }
+                        }
+                    }
+                }
+
+                code-column := Rectangle {
+                    horizontal-stretch: 1;
+                    height: parent.height;
+                    clip: true;
+                    background: #282a36;
+
+                    content-shell := Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        clip: true;
+
+                        code-scroll := DiffCodeScrollView {
+                            width: parent.width;
+                            height: parent.height - (root.show-status-bar ? root.status-bar-height : 0px);
+                            code-line-height: root.code-line-height;
+                            code-font-size: root.code-font-size;
+                            line-number-width: root.line-number-width;
+                            gutter-line-color: root.gutter-line-color;
+                            lines: root.lines;
+                            code-scroll-x <=> root.code-scroll-x;
+                            max-content-width: root.max-content-width;
+                            code-interacted => {
+                                root.file-list-focused = false;
+                            }
+                        }
+
+                        status-bar := Rectangle {
+                            visible: root.show-status-bar;
+                            width: parent.width;
+                            height: root.status-bar-height;
+                            y: parent.height - self.height;
+                            background: #21222c;
+                            clip: true;
+
+                            VerticalBox {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                padding-top: 2px;
+                                padding-bottom: 2px;
+                                spacing: 2px;
+
+                                Text {
+                                    text: root.status-text;
+                                    color: #f8f8f2;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                    visible: root.status-text != "";
+                                }
+
+                                Text {
+                                    text: root.file-info;
+                                    color: #bd93f9;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                    visible: root.file-info != "";
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
-            PathLabel {
+            header-row := HorizontalBox {
+                y: 0;
+                width: parent.width;
                 height: root.toolbar-height;
-                path: root.path-b;
-            }
-        }
+                padding: 0px;
+                spacing: 0px;
+                z: 2;
 
-        Text {
-            text: root.status-text;
-            color: #f8f8f2;
-            font-size: 12px;
-            wrap: word-wrap;
-            visible: root.status-text != "";
-        }
-
-        Text {
-            text: root.file-info;
-            color: #bd93f9;
-            font-size: 12px;
-            wrap: word-wrap;
-            visible: root.file-info != "";
-        }
-
-        HorizontalBox {
-            vertical-stretch: 1;
-            spacing: 6px;
-
-            Rectangle {
-                width: root.file-list-width;
-                vertical-stretch: 1;
-                y: -root.file-row-height * 2 / 3;
-                visible: root.changed-file-count > 0;
-                background: #21222c;
-                border-radius: 4px;
-                clip: false;
-
-                VerticalBox {
-                    padding: 6px;
-                    spacing: 4px;
+                file-list-header := Rectangle {
+                    width: root.file-list-width;
+                    visible: root.changed-file-count > 0;
+                    background: #21222c;
 
                     Text {
+                        x: root.text-gutter;
+                        width: parent.width - 2 * root.text-gutter;
+                        height: parent.height;
                         text: root.file-list-title;
                         color: #6272a4;
                         font-size: 12px;
+                        horizontal-alignment: left;
+                        vertical-alignment: center;
+                    }
+                }
+
+                toolbar := HorizontalBox {
+                    horizontal-stretch: 1;
+                    height: root.toolbar-height;
+                    spacing: root.toolbar-gap;
+
+                    PathLabel {
+                        height: root.toolbar-height;
+                        path: root.path-a;
                     }
 
-                    file-list := ChangedFilesScrollView {
-                        vertical-stretch: 1;
-                        row-height: root.file-row-height;
-                        files: root.changed-files;
-                        max-path-width: root.max-file-path-width;
-                        selected-index: root.selected-file-index;
-                        file-scroll-x <=> root.file-scroll-x;
-                        file-list-interacted => {
-                            root.file-list-focused = true;
-                        }
-                        file-selected(index) => {
-                            root.file-selected(index);
-                        }
+                    PathLabel {
+                        height: root.toolbar-height;
+                        path: root.path-b;
                     }
                 }
             }
-
-            Rectangle {
-                horizontal-stretch: 1;
-                vertical-stretch: 1;
-                background: #282a36;
-                border-radius: 4px;
-                clip: true;
-
-                code-scroll := DiffCodeScrollView {
-                    width: parent.width;
-                    height: parent.height;
-                    code-line-height: root.code-line-height;
-                    code-font-size: root.code-font-size;
-                    line-number-width: root.line-number-width;
-                    gutter-line-color: root.gutter-line-color;
-                    lines: root.lines;
-                    code-scroll-x <=> root.code-scroll-x;
-                    max-content-width: root.max-content-width;
-                    code-interacted => {
-                        root.file-list-focused = false;
-                    }
-                }
-            }
-        }
         }
     }
 }

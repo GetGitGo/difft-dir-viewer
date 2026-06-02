@@ -2,8 +2,13 @@
 // Release Windows builds use the GUI subsystem (no extra console window).
 
 mod difft_probe;
+mod line_ending;
 mod model;
 mod segments;
+#[cfg(target_os = "macos")]
+mod macos_icon;
+#[cfg(target_os = "windows")]
+mod windows_edge;
 
 slint::include_modules!();
 
@@ -12,18 +17,24 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use difft_probe::{difft_command, install_message, probe_difft};
+use difft_probe::{difft_command, install_message, resolve_difft};
 use model::{display_lines, file_info_message, parse_diff_results, status_label, DiffFile, DisplayLine};
 use segments::{
-    build_segments, code_brush, plain_line_brush, text_pixel_width, to_slint_segments, Side,
-    GUTTER_LINE,
+    build_segments, code_brush, plain_line_brush, prepare_display_line, text_pixel_width,
+    to_slint_segments, Side, GUTTER_LINE,
 };
 
 const BYTE_LIMIT: &str = "32000000";
+const PARSE_ERROR_LIMIT: &str = "4096";
+/// Show essentially the whole file in the GUI (not just changed hunks).
+const FULL_FILE_CONTEXT: &str = "999999";
 
 struct CliDirs {
     path_a: PathBuf,
     path_b: PathBuf,
+    label_a: String,
+    label_b: String,
+    difft: Option<PathBuf>,
 }
 
 struct DiffSession {
@@ -32,9 +43,13 @@ struct DiffSession {
     files: Vec<DiffFile>,
 }
 
-/// Return the CLI usage line.
-fn usage() -> &'static str {
-    "Usage: difft-dir-viewer <dir-a> <dir-b>"
+fn usage() -> String {
+    "Usage: difft-dir-viewer [--difft PATH] <dir-a> <dir-b>\n\
+     \n\
+     Options:\n\
+       --difft PATH   Path to the difft binary (overrides DIFT_PATH and auto-discovery)\n\
+       -h, --help     Show this help"
+        .to_owned()
 }
 
 /// Build a usage error message for an invalid CLI argument count.
@@ -49,42 +64,71 @@ fn cli_usage_error(got: usize) -> String {
 
 /// Parse exactly two directory paths from the command line.
 fn parse_cli_directories() -> Result<CliDirs, String> {
-    let paths: Vec<PathBuf> = env::args_os().skip(1).map(PathBuf::from).collect();
+    let mut difft = None;
+    let mut paths = Vec::new();
+    let mut args = env::args_os().skip(1);
+
+    while let Some(arg) = args.next() {
+        let key = arg.to_string_lossy();
+        match key.as_ref() {
+            "--help" | "-h" => return Err(usage()),
+            "--difft" => {
+                let Some(value) = args.next() else {
+                    return Err(format!("--difft requires a path.\n\n{}", usage()));
+                };
+                difft = Some(PathBuf::from(value));
+            }
+            _ if key.starts_with("--difft=") => {
+                let path = key.trim_start_matches("--difft=");
+                if path.is_empty() {
+                    return Err(format!("--difft requires a path.\n\n{}", usage()));
+                }
+                difft = Some(PathBuf::from(path));
+            }
+            _ if key.starts_with('-') => {
+                return Err(format!("unknown option: {key}\n\n{}", usage()));
+            }
+            _ => paths.push(PathBuf::from(arg)),
+        }
+    }
+
     match paths.len() {
         2 => Ok(CliDirs {
-            path_a: full_path(paths[0].clone()),
-            path_b: full_path(paths[1].clone()),
+            path_a: resolve_path(paths[0].clone()),
+            path_b: resolve_path(paths[1].clone()),
+            label_a: paths[0].to_string_lossy().into_owned(),
+            label_b: paths[1].to_string_lossy().into_owned(),
+            difft,
         }),
         got => Err(cli_usage_error(got)),
     }
 }
 
-/// Resolve a user path to an absolute path (canonical when possible).
-fn full_path(path: PathBuf) -> PathBuf {
-    if let Ok(canonical) = path.canonicalize() {
-        return canonical;
-    }
+/// Resolve a user path for filesystem / subprocess use (canonical when possible).
+fn resolve_path(path: PathBuf) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path)
+    };
 
-    if path.is_absolute() {
-        return path;
-    }
-
-    env::current_dir()
-        .map(|cwd| cwd.join(&path))
-        .unwrap_or(path)
+    absolute.canonicalize().unwrap_or(absolute)
 }
 
 /// Run `difft` on two directories and parse the JSON array of changed files.
 fn run_difft(difft: &Path, path_a: &Path, path_b: &Path) -> Result<Vec<DiffFile>, String> {
     let output = difft_command(difft)
         .env("DFT_UNSTABLE", "yes")
+        .env("DFT_PARSE_ERROR_LIMIT", PARSE_ERROR_LIMIT)
         .args([
             "--display",
             "json",
             "--byte-limit",
             BYTE_LIMIT,
             "--context",
-            "3",
+            FULL_FILE_CONTEXT,
         ])
         .arg(path_a)
         .arg(path_b)
@@ -92,7 +136,7 @@ fn run_difft(difft: &Path, path_a: &Path, path_b: &Path) -> Result<Vec<DiffFile>
         .map_err(|e| format!("failed to run {}: {e}", difft.display()))?;
 
     if !output.stdout.is_empty() {
-        return parse_diff_results(&output.stdout);
+        return parse_diff_results(&output.stdout, path_a, path_b);
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -113,29 +157,31 @@ fn line_num(n: Option<u32>) -> i32 {
 
 /// Map a `DisplayLine` into a Slint `DiffLine` with syntax segments.
 fn slint_line(line: &DisplayLine) -> DiffLine {
+    let (lhs_text, lhs_spans) = prepare_display_line(&line.lhs_text, &line.lhs_spans);
+    let (rhs_text, rhs_spans) = prepare_display_line(&line.rhs_text, &line.rhs_spans);
     DiffLine {
         lhs_novel: line.is_novel_lhs,
         rhs_novel: line.is_novel_rhs,
         lhs_line: line_num(line.lhs_line),
         rhs_line: line_num(line.rhs_line),
-        lhs_plain_text: line.lhs_text.clone().into(),
-        rhs_plain_text: line.rhs_text.clone().into(),
+        lhs_plain_text: lhs_text.clone().into(),
+        rhs_plain_text: rhs_text.clone().into(),
         lhs_plain_color: plain_line_brush(line.is_novel_lhs, Side::Left),
         rhs_plain_color: plain_line_brush(line.is_novel_rhs, Side::Right),
         lhs_segments: to_slint_segments(&build_segments(
-            &line.lhs_text,
-            &line.lhs_spans,
+            &lhs_text,
+            &lhs_spans,
             line.is_novel_lhs,
             Side::Left,
         )),
         rhs_segments: to_slint_segments(&build_segments(
-            &line.rhs_text,
-            &line.rhs_spans,
+            &rhs_text,
+            &rhs_spans,
             line.is_novel_rhs,
             Side::Right,
         )),
-        lhs_content_width: text_pixel_width(&line.lhs_text),
-        rhs_content_width: text_pixel_width(&line.rhs_text),
+        lhs_content_width: text_pixel_width(&lhs_text),
+        rhs_content_width: text_pixel_width(&rhs_text),
     }
 }
 
@@ -324,14 +370,44 @@ fn init_gutter_colors(ui: &MainWindow) {
     ui.set_gutter_line_color(code_brush(GUTTER_LINE));
 }
 
+#[cfg(target_os = "windows")]
+fn schedule_fill_work_area(ui: &MainWindow) {
+    let ui_handle = ui.as_weak();
+    for delay_ms in [0_u64, 50, 200] {
+        let ui_handle = ui_handle.clone();
+        slint::Timer::single_shot(Duration::from_millis(delay_ms), move || {
+            if let Some(ui) = ui_handle.upgrade() {
+                windows_edge::fill_work_area(&ui.window());
+            }
+        });
+    }
+}
+
 /// Maximize the window on startup and schedule initial focus.
 fn maximize_on_startup(ui: &MainWindow) {
     let ui_handle = ui.as_weak();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = ui_handle.upgrade() {
-            ui.window().set_maximized(true);
+            let window = ui.window();
+            #[cfg(target_os = "windows")]
+            {
+                windows_edge::fill_work_area(&window);
+                windows_edge::install_borderless_hooks(&window);
+                schedule_fill_work_area(&ui);
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                window.set_maximized(true);
+            }
             schedule_focus_diff_panel(&ui);
         }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_application_icon() {
+    let _ = slint::invoke_from_event_loop(move || {
+        macos_icon::set_from_png(include_bytes!("../assets/icons/icon-512.png"));
     });
 }
 
@@ -341,14 +417,17 @@ fn main() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
     init_gutter_colors(&ui);
     maximize_on_startup(&ui);
+    #[cfg(target_os = "macos")]
+    schedule_application_icon();
     clear_diff_view(&ui);
 
     if let Ok(dirs) = &dirs {
-        ui.set_path_a(dirs.path_a.display().to_string().into());
-        ui.set_path_b(dirs.path_b.display().to_string().into());
+        ui.set_path_a(dirs.label_a.clone().into());
+        ui.set_path_b(dirs.label_b.clone().into());
     }
 
-    let difft = Arc::new(Mutex::new(probe_difft().ok()));
+    let difft_path = dirs.as_ref().ok().and_then(|dirs| dirs.difft.clone());
+    let difft = Arc::new(Mutex::new(resolve_difft(difft_path).ok()));
     let diff_session: Arc<Mutex<Option<DiffSession>>> = Arc::new(Mutex::new(None));
 
     match (&dirs, difft.lock().unwrap().as_ref()) {
@@ -359,8 +438,8 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.set_status_text("difft not found.".into());
             ui.set_file_info(install_message().into());
         }
-        (Ok(_), Some(path)) => {
-            ui.set_status_text(format!("Using difft: {}", path.display()).into());
+        (Ok(_), Some(_)) => {
+            ui.set_status_text("".into());
         }
     }
 

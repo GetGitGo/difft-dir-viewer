@@ -1,2 +1,6 @@
 # Crate-local cargo output if built outside workspace /target
 /target/
+
+# Generated from assets/icon.svg in build.rs
+/assets/icons/*
+!/assets/icons/.gitkeep
