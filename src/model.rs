@@ -259,6 +259,7 @@ fn parse_diff_entry(
     }
 }
 
+#[cfg(test)]
 pub fn parse_diff_json(stdout: &[u8], path_a: &Path, path_b: &Path) -> Result<DiffFile, String> {
     let trimmed = std::str::from_utf8(stdout)
         .map_err(|e| e.to_string())?

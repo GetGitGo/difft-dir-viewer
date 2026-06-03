@@ -1,35 +1,5 @@
 //! LF / CRLF / CR helpers — split like difft, normalize for display.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LineEnding {
-    #[default]
-    Lf,
-    CrLf,
-    Cr,
-}
-
-impl LineEnding {
-    #[allow(dead_code)]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            LineEnding::Lf => "\n",
-            LineEnding::CrLf => "\r\n",
-            LineEnding::Cr => "\r",
-        }
-    }
-}
-
-/// Prefer CRLF when present, else legacy CR-only, else LF.
-pub fn detect_line_ending(content: &str) -> LineEnding {
-    if content.contains("\r\n") {
-        LineEnding::CrLf
-    } else if content.contains('\r') {
-        LineEnding::Cr
-    } else {
-        LineEnding::Lf
-    }
-}
-
 /// Remove a trailing `\r` from one split segment (CRLF / CR source files).
 pub fn normalize_line(line: &str) -> String {
     line.strip_suffix('\r').unwrap_or(line).to_owned()
@@ -46,6 +16,23 @@ pub fn split_logical_lines(content: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum LineEnding {
+        Lf,
+        CrLf,
+        Cr,
+    }
+
+    fn detect_line_ending(content: &str) -> LineEnding {
+        if content.contains("\r\n") {
+            LineEnding::CrLf
+        } else if content.contains('\r') {
+            LineEnding::Cr
+        } else {
+            LineEnding::Lf
+        }
+    }
 
     #[test]
     fn crlf_splits_like_difft_and_strips_cr() {
