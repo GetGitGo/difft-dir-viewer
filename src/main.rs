@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use difft_probe::{difft_command, install_message, resolve_difft};
-use model::{display_lines, file_info_message, parse_diff_results, status_label, DiffFile, DisplayLine};
+use model::{display_lines, file_info_message, filter_diff_files, normalize_extension, parse_diff_results, status_label, DiffFile, DisplayLine};
 use segments::{
     build_segments, code_brush, plain_line_brush, prepare_display_line, text_pixel_width,
     to_slint_segments, Side, GUTTER_LINE,
@@ -37,6 +37,7 @@ struct CliDirs {
     label_a: String,
     label_b: String,
     difft: Option<PathBuf>,
+    extensions: Vec<String>,
 }
 
 struct DiffSession {
@@ -46,11 +47,12 @@ struct DiffSession {
 }
 
 fn usage() -> String {
-    "Usage: difft-dir-viewer [--difft PATH] <dir-a> <dir-b>\n\
+    "Usage: difft-dir-viewer [--difft PATH] [-e EXT]... <dir-a> <dir-b>\n\
      \n\
      Options:\n\
-       --difft PATH   Path to the difft binary (overrides DIFT_PATH and auto-discovery)\n\
-       -h, --help     Show this help"
+       --difft PATH         Path to the difft binary (overrides DIFT_PATH and auto-discovery)\n\
+       -e, --extension EXT  Only compare text files with this extension (repeatable)\n\
+       -h, --help           Show this help"
         .to_owned()
 }
 
@@ -67,6 +69,7 @@ fn cli_usage_error(got: usize) -> String {
 /// Parse exactly two directory paths from the command line.
 fn parse_cli_directories() -> Result<CliDirs, String> {
     let mut difft = None;
+    let mut extensions = Vec::new();
     let mut paths = Vec::new();
     let mut args = env::args_os().skip(1);
 
@@ -87,6 +90,30 @@ fn parse_cli_directories() -> Result<CliDirs, String> {
                 }
                 difft = Some(PathBuf::from(path));
             }
+            "-e" | "--extension" => {
+                let Some(value) = args.next() else {
+                    return Err(format!("-e requires an extension.\n\n{}", usage()));
+                };
+                let ext = value.to_string_lossy();
+                let Some(normalized) = normalize_extension(&ext) else {
+                    return Err(format!("invalid extension: {ext}\n\n{}", usage()));
+                };
+                extensions.push(normalized);
+            }
+            _ if key.starts_with("--extension=") => {
+                let ext = key.trim_start_matches("--extension=");
+                let Some(normalized) = normalize_extension(ext) else {
+                    return Err(format!("invalid extension: {ext}\n\n{}", usage()));
+                };
+                extensions.push(normalized);
+            }
+            _ if key.starts_with("-e") && key.len() > 2 => {
+                let ext = &key[2..];
+                let Some(normalized) = normalize_extension(ext) else {
+                    return Err(format!("invalid extension: {ext}\n\n{}", usage()));
+                };
+                extensions.push(normalized);
+            }
             _ if key.starts_with('-') => {
                 return Err(format!("unknown option: {key}\n\n{}", usage()));
             }
@@ -101,6 +128,7 @@ fn parse_cli_directories() -> Result<CliDirs, String> {
             label_a: paths[0].to_string_lossy().into_owned(),
             label_b: paths[1].to_string_lossy().into_owned(),
             difft,
+            extensions,
         }),
         got => Err(cli_usage_error(got)),
     }
@@ -120,7 +148,12 @@ fn resolve_path(path: PathBuf) -> PathBuf {
 }
 
 /// Run `difft` on two directories and parse the JSON array of changed files.
-fn run_difft(difft: &Path, path_a: &Path, path_b: &Path) -> Result<Vec<DiffFile>, String> {
+fn run_difft(
+    difft: &Path,
+    path_a: &Path,
+    path_b: &Path,
+    extensions: &[String],
+) -> Result<Vec<DiffFile>, String> {
     let output = difft_command(difft)
         .env("DFT_UNSTABLE", "yes")
         .env("DFT_PARSE_ERROR_LIMIT", PARSE_ERROR_LIMIT)
@@ -139,7 +172,8 @@ fn run_difft(difft: &Path, path_a: &Path, path_b: &Path) -> Result<Vec<DiffFile>
         .map_err(|e| format!("failed to run {}: {e}", difft.display()))?;
 
     if !output.stdout.is_empty() {
-        return parse_diff_results(&output.stdout, path_a, path_b);
+        return parse_diff_results(&output.stdout, path_a, path_b)
+            .map(|files| filter_diff_files(files, extensions));
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -315,6 +349,7 @@ fn run_diff(
     difft: Arc<Mutex<Option<PathBuf>>>,
     path_a: PathBuf,
     path_b: PathBuf,
+    extensions: Vec<String>,
     diff_session: Arc<Mutex<Option<DiffSession>>>,
 ) {
     let difft_path = match difft.lock().unwrap().clone() {
@@ -342,7 +377,7 @@ fn run_diff(
     }
 
     std::thread::spawn(move || {
-        let outcome = run_difft(&difft_path, &path_a, &path_b);
+        let outcome = run_difft(&difft_path, &path_a, &path_b, &extensions);
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(ui) = ui_handle.upgrade() {
                 match outcome {
@@ -479,6 +514,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let difft_store = Arc::clone(&difft);
         let path_a = dirs.path_a.clone();
         let path_b = dirs.path_b.clone();
+        let extensions = dirs.extensions.clone();
         let diff_session_store = Arc::clone(&diff_session);
         slint::Timer::single_shot(Duration::from_millis(0), move || {
             run_diff(
@@ -486,6 +522,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 difft_store,
                 path_a,
                 path_b,
+                extensions,
                 diff_session_store,
             );
         });

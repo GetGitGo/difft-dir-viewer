@@ -31,7 +31,7 @@ Viewer 子进程调用 `difft`，读取 `--display json` 输出，左侧展示 *
    （子进程环境中会设置 `DFT_UNSTABLE=yes` 与 `DFT_PARSE_ERROR_LIMIT=4096`。）
 
 3. 解析 JSON **数组** — 每个变更文件一项（通过 `--skip-unchanged` 省略内容相同的文件）。行文本从磁盘读取，采用 **UTF-8 lossy** 解码（非法字节显示为 U+FFFD 替换字符）；JSON 携带对齐与变更元数据（与 difft-file-viewer 相同格式）。单文件读盘/解析失败时尽量跳过其余文件；汇总信息可能出现在底部 overlay。
-4. **Changed files** 列表显示相对路径与状态标记：
+4. **Changed files** 列表显示相对路径与状态标记（二进制文件不显示；可用 `-e` 按后缀过滤）：
    - **M** — 修改（两侧都有）
    - **A** — 新增（仅在 B）
    - **D** — 删除（仅在 A）
@@ -136,7 +136,7 @@ cargo run --manifest-path difft-dir-viewer/Cargo.toml -- dir-a dir-b
 ## 使用
 
 ```bash
-difft-dir-viewer [--difft PATH] <dir-a> <dir-b>
+difft-dir-viewer [--difft PATH] [-e EXT]... <dir-a> <dir-b>
 ```
 
 示例（在 `slint-viewer/` 下）：
@@ -145,9 +145,21 @@ difft-dir-viewer [--difft PATH] <dir-a> <dir-b>
 cargo run --manifest-path difft-dir-viewer/Cargo.toml -- \
   difft-file-viewer/difftastic/sample_files/dir_1 \
   difft-file-viewer/difftastic/sample_files/dir_2
+
+cargo run --manifest-path difft-dir-viewer/Cargo.toml -- \
+  -e cpp -e h dir-a dir-b
 ```
 
 **必须**提供两个目录路径；启动后自动 diff。顶栏显示 **命令行传入的路径字符串**（非 canonicalize 后的 `\\?\` / UNC 形式）。
+
+### 后缀过滤（`-e`）
+
+| 选项 | 行为 |
+|------|------|
+| 无 | 仅比较 **文本文件**（二进制文件不出现在列表中） |
+| `-e EXT`（可重复） | 仅比较后缀匹配给定扩展名的 **文本文件**（`cpp`、`.cpp`、`CPP` 等价） |
+
+无后缀路径（如 `Makefile`）在未指定 `-e` 时会参与比较；指定 `-e` 时会被排除。
 
 ## 界面布局
 

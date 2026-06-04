@@ -418,6 +418,46 @@ pub fn display_lines(
     }
 }
 
+/// Normalize a CLI extension (`cpp`, `.cpp`, `CPP` → `cpp`).
+pub fn normalize_extension(ext: &str) -> Option<String> {
+    let ext = ext.trim().trim_start_matches('.');
+    if ext.is_empty() {
+        return None;
+    }
+    Some(ext.to_ascii_lowercase())
+}
+
+/// Whether `difft` treated this entry as a text diff (not binary).
+pub fn is_text_diff_file(file: &DiffFile) -> bool {
+    !file.language.eq_ignore_ascii_case("Binary")
+}
+
+fn path_extension(path: &str) -> Option<String> {
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+}
+
+/// Whether a relative path ends with one of the normalized extensions.
+pub fn path_matches_extensions(path: &str, extensions: &[String]) -> bool {
+    let Some(file_ext) = path_extension(path) else {
+        return false;
+    };
+    extensions.iter().any(|ext| file_ext == *ext)
+}
+
+/// Keep text diffs; when `extensions` is non-empty, keep only matching suffixes.
+pub fn filter_diff_files(mut files: Vec<DiffFile>, extensions: &[String]) -> Vec<DiffFile> {
+    files.retain(|file| {
+        if !is_text_diff_file(file) {
+            return false;
+        }
+        extensions.is_empty() || path_matches_extensions(&file.path, extensions)
+    });
+    files
+}
+
 pub fn status_label(status: DiffStatus) -> &'static str {
     match status {
         DiffStatus::Changed => "M",
@@ -593,6 +633,68 @@ mod tests {
         assert!(!files[0].aligned_lines[0].lhs_text.is_empty());
         let _ = fs::remove_dir_all(&dir_a);
         let _ = fs::remove_dir_all(&dir_b);
+    }
+
+    #[test]
+    fn normalize_extension_accepts_dotted_and_uppercase() {
+        assert_eq!(normalize_extension("cpp").as_deref(), Some("cpp"));
+        assert_eq!(normalize_extension(".CPP").as_deref(), Some("cpp"));
+        assert_eq!(normalize_extension("  .h  ").as_deref(), Some("h"));
+        assert!(normalize_extension(".").is_none());
+        assert!(normalize_extension("").is_none());
+    }
+
+    #[test]
+    fn filter_drops_binary_files() {
+        let files = vec![
+            DiffFile {
+                path: "a.rs".into(),
+                language: "Rust".into(),
+                status: DiffStatus::Changed,
+                extra_info: None,
+                aligned_lines: vec![],
+            },
+            DiffFile {
+                path: "logo.png".into(),
+                language: "Binary".into(),
+                status: DiffStatus::Changed,
+                extra_info: None,
+                aligned_lines: vec![],
+            },
+        ];
+        let kept = filter_diff_files(files, &[]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].path, "a.rs");
+    }
+
+    #[test]
+    fn filter_by_extension_is_case_insensitive() {
+        let files = vec![
+            DiffFile {
+                path: "src/main.cpp".into(),
+                language: "C++".into(),
+                status: DiffStatus::Changed,
+                extra_info: None,
+                aligned_lines: vec![],
+            },
+            DiffFile {
+                path: "src/main.rs".into(),
+                language: "Rust".into(),
+                status: DiffStatus::Changed,
+                extra_info: None,
+                aligned_lines: vec![],
+            },
+            DiffFile {
+                path: "Makefile".into(),
+                language: "Text".into(),
+                status: DiffStatus::Changed,
+                extra_info: None,
+                aligned_lines: vec![],
+            },
+        ];
+        let kept = filter_diff_files(files, &["cpp".to_owned()]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].path, "src/main.cpp");
     }
 
     #[test]

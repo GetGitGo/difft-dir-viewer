@@ -31,7 +31,7 @@ The viewer spawns `difft`, reads `--display json` output, shows a **Changed file
    (With `DFT_UNSTABLE=yes` and `DFT_PARSE_ERROR_LIMIT=4096` set in the subprocess environment.)
 
 3. Parse the JSON **array** — one entry per changed file (`--skip-unchanged` omits identical files from the list). Line text is read from disk with **UTF-8 lossy** decoding (invalid bytes become U+FFFD replacement characters); JSON carries alignment and change metadata (same format as difft-file-viewer). Per-file read/parse failures are skipped when possible; a summary may appear in the info overlay.
-4. **Changed files** list shows relative paths with a status tag:
+4. **Changed files** list shows relative paths with a status tag (binary files are omitted; use `-e` to restrict by extension):
    - **M** — modified (both sides)
    - **A** — added (only in B)
    - **D** — deleted (only in A)
@@ -140,7 +140,7 @@ difft --version
 ## Usage
 
 ```bash
-difft-dir-viewer [--difft PATH] <dir-a> <dir-b>
+difft-dir-viewer [--difft PATH] [-e EXT]... <dir-a> <dir-b>
 ```
 
 Examples (from `slint-viewer/`):
@@ -149,9 +149,21 @@ Examples (from `slint-viewer/`):
 cargo run --manifest-path difft-dir-viewer/Cargo.toml -- \
   difft-file-viewer/difftastic/sample_files/dir_1 \
   difft-file-viewer/difftastic/sample_files/dir_2
+
+cargo run --manifest-path difft-dir-viewer/Cargo.toml -- \
+  -e cpp -e h dir-a dir-b
 ```
 
 **Exactly two** directory paths are required. Diff starts automatically on launch. The top bar shows the **same path strings you passed on the command line** (not canonicalized `\\?\` / UNC forms).
+
+### File extension filter (`-e`)
+
+| Option | Behaviour |
+|--------|-----------|
+| *(none)* | Compare **text files only** (binary files are omitted from the list) |
+| `-e EXT` (repeatable) | Compare **text files** whose suffix matches one of the given extensions (`cpp`, `.cpp`, and `CPP` are equivalent) |
+
+Extensionless paths (e.g. `Makefile`) are included when no `-e` is given, and excluded when `-e` is used.
 
 ## UI layout
 
