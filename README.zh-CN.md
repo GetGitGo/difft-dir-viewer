@@ -25,12 +25,12 @@ Viewer 子进程调用 `difft`，读取 `--display json` 输出，左侧展示 *
 2. Viewer 执行：
 
    ```text
-   difft --display json --byte-limit 32000000 --context 999999 <dirA> <dirB>
+   difft --display json --skip-unchanged --byte-limit 32000000 --context 999999 <dirA> <dirB>
    ```
 
    （子进程环境中会设置 `DFT_UNSTABLE=yes` 与 `DFT_PARSE_ERROR_LIMIT=4096`。）
 
-3. 解析 JSON **数组** — 每个变更文件一项（默认不含 unchanged）。行文本从磁盘读取，采用 **UTF-8 lossy** 解码（非法字节显示为 U+FFFD 替换字符）；JSON 携带对齐与变更元数据（与 difft-file-viewer 相同格式）。单文件读盘/解析失败时尽量跳过其余文件；汇总信息可能出现在底部 overlay。
+3. 解析 JSON **数组** — 每个变更文件一项（通过 `--skip-unchanged` 省略内容相同的文件）。行文本从磁盘读取，采用 **UTF-8 lossy** 解码（非法字节显示为 U+FFFD 替换字符）；JSON 携带对齐与变更元数据（与 difft-file-viewer 相同格式）。单文件读盘/解析失败时尽量跳过其余文件；汇总信息可能出现在底部 overlay。
 4. **Changed files** 列表显示相对路径与状态标记：
    - **M** — 修改（两侧都有）
    - **A** — 新增（仅在 B）

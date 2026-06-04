@@ -127,6 +127,7 @@ fn run_difft(difft: &Path, path_a: &Path, path_b: &Path) -> Result<Vec<DiffFile>
         .args([
             "--display",
             "json",
+            "--skip-unchanged",
             "--byte-limit",
             BYTE_LIMIT,
             "--context",

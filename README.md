@@ -25,12 +25,12 @@ The viewer spawns `difft`, reads `--display json` output, shows a **Changed file
 2. The viewer runs:
 
    ```text
-   difft --display json --byte-limit 32000000 --context 999999 <dirA> <dirB>
+   difft --display json --skip-unchanged --byte-limit 32000000 --context 999999 <dirA> <dirB>
    ```
 
    (With `DFT_UNSTABLE=yes` and `DFT_PARSE_ERROR_LIMIT=4096` set in the subprocess environment.)
 
-3. Parse the JSON **array** — one entry per changed file (unchanged files omitted by default). Line text is read from disk with **UTF-8 lossy** decoding (invalid bytes become U+FFFD replacement characters); JSON carries alignment and change metadata (same format as difft-file-viewer). Per-file read/parse failures are skipped when possible; a summary may appear in the info overlay.
+3. Parse the JSON **array** — one entry per changed file (`--skip-unchanged` omits identical files from the list). Line text is read from disk with **UTF-8 lossy** decoding (invalid bytes become U+FFFD replacement characters); JSON carries alignment and change metadata (same format as difft-file-viewer). Per-file read/parse failures are skipped when possible; a summary may appear in the info overlay.
 4. **Changed files** list shows relative paths with a status tag:
    - **M** — modified (both sides)
    - **A** — added (only in B)
