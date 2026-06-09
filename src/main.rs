@@ -20,16 +20,48 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use difft_probe::{difft_command, install_message, resolve_difft};
-use model::{display_lines, file_info_message, filter_diff_files, normalize_extension, parse_diff_results, status_label, DiffFile, DisplayLine};
+use model::{
+    apply_view_mode, diff_line_indices, display_lines, filter_diff_files, next_diff_index,
+    normalize_extension, parse_diff_results, prev_diff_index, status_label, DiffFile, DisplayLine,
+    ViewMode,
+};
 use segments::{
-    build_segments, code_brush, plain_line_brush, prepare_display_line, text_pixel_width,
-    to_slint_segments, Side, GUTTER_LINE,
+    build_segments, code_brush, collapsed_line_brush, plain_line_brush, prepare_display_line,
+    text_pixel_width, to_slint_segments, Side, GUTTER_LINE,
 };
 
 const BYTE_LIMIT: &str = "32000000";
 const PARSE_ERROR_LIMIT: &str = "4096";
 /// Show essentially the whole file in the GUI (not just changed hunks).
 const FULL_FILE_CONTEXT: &str = "999999";
+
+const HELP_TEXT: &str = "Keyboard shortcuts\n\
+\n\
+Scrolling (code pane focused)\n\
+  Page Up / Page Down, Ctrl+b / Ctrl+f   one page\n\
+  Ctrl+u / Ctrl+d                        half page\n\
+  Home / End, G, g g                     top / bottom\n\
+  Left / Right                           horizontal scroll\n\
+  Wheel / trackpad                       smooth vertical scroll\n\
+\n\
+Scrolling (Changed files sidebar focused)\n\
+  Same keys as above apply to the file list\n\
+\n\
+Diff navigation (full file view only)\n\
+  n                                      next change\n\
+  Shift+n                                previous change\n\
+\n\
+View\n\
+  u                                      toggle full file / changes only\n\
+  h                                      show this help\n\
+  Esc                                    close this help\n\
+  Ctrl+= / Ctrl+-                        font size\n\
+\n\
+Other\n\
+  Esc (help closed)                      leave sidebar focus\n\
+  q / Alt+F4                             quit\n\
+\n\
+On macOS, Ctrl also matches Command (Meta) for the same actions.";
 
 struct CliDirs {
     path_a: PathBuf,
@@ -40,10 +72,34 @@ struct CliDirs {
     extensions: Vec<String>,
 }
 
+#[derive(Clone)]
 struct DiffSession {
     path_a: PathBuf,
     path_b: PathBuf,
     files: Vec<DiffFile>,
+    view_mode: ViewMode,
+    diff_indices: Vec<usize>,
+}
+
+fn compute_diff_indices(file: &DiffFile, path_a: &Path, path_b: &Path) -> Vec<usize> {
+    display_lines(file, path_a, path_b)
+        .ok()
+        .map(|lines| diff_line_indices(&lines))
+        .unwrap_or_default()
+}
+
+fn sync_view_mode(ui: &MainWindow, view_mode: ViewMode) {
+    ui.set_changes_only_view(view_mode == ViewMode::ChangesOnly);
+}
+
+fn open_help(ui: &MainWindow) {
+    ui.set_help_text(HELP_TEXT.into());
+    ui.set_show_help(true);
+}
+
+fn show_message_help(ui: &MainWindow, message: &str) {
+    ui.set_help_text(format!("{message}\n\nPress h for keyboard shortcuts.").into());
+    ui.set_show_help(true);
 }
 
 fn usage() -> String {
@@ -194,6 +250,24 @@ fn line_num(n: Option<u32>) -> i32 {
 
 /// Map a `DisplayLine` into a Slint `DiffLine` with syntax segments.
 fn slint_line(line: &DisplayLine) -> DiffLine {
+    if line.is_collapsed {
+        return DiffLine {
+            lhs_novel: false,
+            rhs_novel: false,
+            lhs_line: -1,
+            rhs_line: -1,
+            lhs_plain_text: line.lhs_text.clone().into(),
+            rhs_plain_text: line.rhs_text.clone().into(),
+            lhs_plain_color: collapsed_line_brush(),
+            rhs_plain_color: collapsed_line_brush(),
+            lhs_segments: slint::ModelRc::new(slint::VecModel::from(Vec::<TextSegment>::new())),
+            rhs_segments: slint::ModelRc::new(slint::VecModel::from(Vec::<TextSegment>::new())),
+            lhs_content_width: text_pixel_width(&line.lhs_text),
+            rhs_content_width: text_pixel_width(&line.rhs_text),
+            collapsed: true,
+        };
+    }
+
     let (lhs_text, lhs_spans) = prepare_display_line(&line.lhs_text, &line.lhs_spans);
     let (rhs_text, rhs_spans) = prepare_display_line(&line.rhs_text, &line.rhs_spans);
     DiffLine {
@@ -219,6 +293,7 @@ fn slint_line(line: &DisplayLine) -> DiffLine {
         )),
         lhs_content_width: text_pixel_width(&lhs_text),
         rhs_content_width: text_pixel_width(&rhs_text),
+        collapsed: false,
     }
 }
 
@@ -243,8 +318,18 @@ fn slint_lines(
     file: &DiffFile,
     path_a: &Path,
     path_b: &Path,
+    view_mode: ViewMode,
 ) -> Result<Vec<DiffLine>, String> {
-    display_lines(file, path_a, path_b).map(|lines| lines.iter().map(slint_line).collect())
+    display_lines(file, path_a, path_b)
+        .map(|lines| apply_view_mode(lines, view_mode))
+        .map(|lines| lines.iter().map(slint_line).collect())
+}
+
+fn update_session_for_file(session: &mut DiffSession, file_index: usize) {
+    if let Some(file) = session.files.get(file_index) {
+        session.diff_indices =
+            compute_diff_indices(file, &session.path_a, &session.path_b);
+    }
 }
 
 /// Move keyboard focus to the side-by-side code panel.
@@ -263,23 +348,29 @@ fn schedule_focus_diff_panel(ui: &MainWindow) {
 }
 
 /// Render one changed file in the diff panes and update selection state.
-fn show_diff_file(ui: &MainWindow, file: &DiffFile, index: i32, path_a: &Path, path_b: &Path) {
-    match slint_lines(file, path_a, path_b) {
+fn show_diff_file(
+    ui: &MainWindow,
+    file: &DiffFile,
+    index: i32,
+    path_a: &Path,
+    path_b: &Path,
+    view_mode: ViewMode,
+) {
+    match slint_lines(file, path_a, path_b, view_mode) {
         Ok(lines) => {
-            let count = lines.len();
             ui.set_max_content_width(max_line_content_width(&lines));
             let model: slint::ModelRc<DiffLine> =
                 std::rc::Rc::new(slint::VecModel::from(lines)).into();
             ui.set_lines(model);
             ui.set_selected_file_index(index);
-            ui.set_file_info(file_info_message(file, count).into());
+            sync_view_mode(ui, view_mode);
             focus_diff_panel(ui);
         }
         Err(err) => {
             ui.set_max_content_width(0.0);
             ui.set_lines(slint::ModelRc::new(slint::VecModel::from(Vec::<DiffLine>::new())));
             ui.set_selected_file_index(index);
-            ui.set_file_info(err.into());
+            show_message_help(ui, &err);
             focus_diff_panel(ui);
         }
     }
@@ -296,7 +387,6 @@ fn clear_diff_view(ui: &MainWindow) {
     ui.set_changed_file_count(0);
     ui.set_selected_file_index(-1);
     ui.set_file_list_title("".into());
-    ui.set_file_info("".into());
 }
 
 /// Populate the changed-files sidebar and highlight the selected row.
@@ -323,7 +413,14 @@ fn show_diff_results(ui: &MainWindow, session: &DiffSession) {
     }
 
     update_file_list(ui, &session.files, 0);
-    show_diff_file(&ui, &session.files[0], 0, &session.path_a, &session.path_b);
+    show_diff_file(
+        ui,
+        &session.files[0],
+        0,
+        &session.path_a,
+        &session.path_b,
+        session.view_mode,
+    );
 }
 
 /// Ensure both CLI paths exist and are directories.
@@ -356,8 +453,7 @@ fn run_diff(
         Some(path) => path,
         None => {
             if let Some(ui) = ui_handle.upgrade() {
-                ui.set_status_text("difft not found.".into());
-                ui.set_file_info(install_message().into());
+                show_message_help(&ui, &install_message());
             }
             return;
         }
@@ -365,15 +461,9 @@ fn run_diff(
 
     if let Err(err) = validate_directories(&path_a, &path_b) {
         if let Some(ui) = ui_handle.upgrade() {
-            ui.set_status_text("".into());
-            ui.set_file_info(err.into());
+            show_message_help(&ui, &err);
         }
         return;
-    }
-
-    if let Some(ui) = ui_handle.upgrade() {
-        ui.set_status_text("Diffing...".into());
-        ui.set_file_info("".into());
     }
 
     std::thread::spawn(move || {
@@ -382,21 +472,24 @@ fn run_diff(
             if let Some(ui) = ui_handle.upgrade() {
                 match outcome {
                     Ok(files) => {
-                        let session = DiffSession {
+                        let mut session = DiffSession {
                             path_a: path_a.clone(),
                             path_b: path_b.clone(),
                             files,
+                            view_mode: ViewMode::Full,
+                            diff_indices: Vec::new(),
                         };
+                        if !session.files.is_empty() {
+                            update_session_for_file(&mut session, 0);
+                        }
                         show_diff_results(&ui, &session);
                         *diff_session.lock().unwrap() = Some(session);
-                        ui.set_status_text("".into());
                         focus_diff_panel(&ui);
                     }
                     Err(err) => {
                         *diff_session.lock().unwrap() = None;
                         clear_diff_view(&ui);
-                        ui.set_status_text("".into());
-                        ui.set_file_info(err.into());
+                        show_message_help(&ui, &err);
                     }
                 }
             }
@@ -460,6 +553,7 @@ fn schedule_application_icon() {
 fn main() -> Result<(), slint::PlatformError> {
     let dirs = parse_cli_directories();
     let ui = MainWindow::new()?;
+    ui.set_help_text(HELP_TEXT.into());
     init_gutter_colors(&ui);
     maximize_on_startup(&ui);
     #[cfg(target_os = "macos")]
@@ -477,15 +571,12 @@ fn main() -> Result<(), slint::PlatformError> {
 
     match (&dirs, difft.lock().unwrap().as_ref()) {
         (Err(err), _) => {
-            ui.set_file_info(err.clone().into());
+            show_message_help(&ui, err);
         }
         (_, None) => {
-            ui.set_status_text("difft not found.".into());
-            ui.set_file_info(install_message().into());
+            show_message_help(&ui, &install_message());
         }
-        (Ok(_), Some(_)) => {
-            ui.set_status_text("".into());
-        }
+        (Ok(_), Some(_)) => {}
     }
 
     {
@@ -493,18 +584,81 @@ fn main() -> Result<(), slint::PlatformError> {
         let diff_session_store = Arc::clone(&diff_session);
         ui.on_file_selected(move |index| {
             if let Some(ui) = ui_handle.upgrade() {
-                let session = diff_session_store.lock().unwrap();
-                if let Some(session) = session.as_ref() {
-                    if let Some(file) = session.files.get(index as usize) {
-                        show_diff_file(
-                            &ui,
-                            file,
-                            index,
-                            &session.path_a,
-                            &session.path_b,
-                        );
+                let mut session = diff_session_store.lock().unwrap();
+                if let Some(session) = session.as_mut() {
+                    if let Some(file) = session.files.get(index as usize).cloned() {
+                        update_session_for_file(session, index as usize);
+                        let view_mode = session.view_mode;
+                        let path_a = session.path_a.clone();
+                        let path_b = session.path_b.clone();
+                        show_diff_file(&ui, &file, index, &path_a, &path_b, view_mode);
                     }
                 }
+            }
+        });
+    }
+
+    {
+        let ui_handle = ui.as_weak();
+        ui.on_open_help(move || {
+            if let Some(ui) = ui_handle.upgrade() {
+                open_help(&ui);
+            }
+        });
+    }
+
+    {
+        let ui_handle = ui.as_weak();
+        let diff_session_store = Arc::clone(&diff_session);
+        ui.on_next_diff(move |current_line, backward| {
+            let session = diff_session_store.lock().unwrap();
+            let Some(session) = session.as_ref() else {
+                return;
+            };
+            if session.view_mode != ViewMode::Full {
+                return;
+            }
+            let current_line = current_line.max(0) as usize;
+            let target = if backward {
+                prev_diff_index(&session.diff_indices, current_line)
+            } else {
+                next_diff_index(&session.diff_indices, current_line)
+            };
+            let Some(target) = target else {
+                return;
+            };
+            if let Some(ui) = ui_handle.upgrade() {
+                ui.invoke_scroll_to_code_line(target as i32);
+            }
+        });
+    }
+
+    {
+        let ui_handle = ui.as_weak();
+        let diff_session_store = Arc::clone(&diff_session);
+        ui.on_toggle_view_mode(move || {
+            let mut session = diff_session_store.lock().unwrap();
+            let Some(session) = session.as_mut() else {
+                return;
+            };
+            if session.files.is_empty() {
+                return;
+            }
+            session.view_mode = session.view_mode.toggle();
+            let view_mode = session.view_mode;
+            let index = ui_handle
+                .upgrade()
+                .map(|ui| ui.get_selected_file_index())
+                .filter(|index| *index >= 0)
+                .unwrap_or(0);
+            let Some(file) = session.files.get(index as usize).cloned() else {
+                return;
+            };
+            let path_a = session.path_a.clone();
+            let path_b = session.path_b.clone();
+            if let Some(ui) = ui_handle.upgrade() {
+                sync_view_mode(&ui, view_mode);
+                show_diff_file(&ui, &file, index, &path_a, &path_b, view_mode);
             }
         });
     }

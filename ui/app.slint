@@ -69,6 +69,7 @@ export struct DiffLine {
     rhs-content-width: length,
     lhs-segments: [TextSegment],
     rhs-segments: [TextSegment],
+    collapsed: bool,
 }
 
 export struct DiffFileEntry {
@@ -307,6 +308,7 @@ component CodeSide inherits Rectangle {
     in property <brush> plain-color;
     in property <[TextSegment]> segments;
     in property <bool> novel;
+    in property <bool> collapsed: false;
     in property <length> line-height: 16px;
     in property <length> code-font-size: 12px;
     in property <brush> gutter-line-color: #6272a4;
@@ -322,7 +324,7 @@ component CodeSide inherits Rectangle {
                 >= (event.delta-y < 0px ? -event.delta-y : event.delta-y)
     }
 
-    private property <brush> row-background: root.novel ? #3b3f52 : #282a36;
+    private property <brush> row-background: root.collapsed ? #313340 : (root.novel ? #3b3f52 : #282a36);
 
     horizontal-stretch: 1;
     min-width: 1px;
@@ -340,7 +342,7 @@ component CodeSide inherits Rectangle {
             x: 0;
             width: parent.width - 6px;
             height: root.line-height;
-            text: root.line-number >= 1 ? root.line-number : "";
+            text: root.collapsed ? "" : (root.line-number >= 1 ? root.line-number : "");
             color: root.gutter-line-color;
             font-family: "Courier New";
             font-size: root.code-font-size;
@@ -445,6 +447,7 @@ component DiffCodeScrollView inherits Rectangle {
                 plain-color: line.lhs-plain-color;
                 segments: line.lhs-segments;
                 novel: line.lhs-novel;
+                collapsed: line.collapsed;
                 horizontal-scroll(delta) => {
                     root.scroll-code-horizontal(delta);
                 }
@@ -467,6 +470,7 @@ component DiffCodeScrollView inherits Rectangle {
                 plain-color: line.rhs-plain-color;
                 segments: line.rhs-segments;
                 novel: line.rhs-novel;
+                collapsed: line.collapsed;
                 horizontal-scroll(delta) => {
                     root.scroll-code-horizontal(delta);
                 }
@@ -550,6 +554,20 @@ component DiffCodeScrollView inherits Rectangle {
     public function scroll-to-bottom() {
         smooth_y.set-instant(scroll-min-y);
     }
+
+    public function top-line-index() -> int {
+        if (root.lines.length == 0) {
+            return 0;
+        }
+        return max(0, min(root.lines.length - 1, -list.viewport-y / root.code-line-height));
+    }
+
+    public function scroll-to-line(line-index: int) {
+        if (root.lines.length == 0) {
+            return;
+        }
+        smooth_y.set-instant(min(0px, max(root.scroll-min-y, -line-index * root.code-line-height)));
+    }
 }
 
 export component MainWindow inherits Window {
@@ -563,6 +581,9 @@ export component MainWindow inherits Window {
 
     callback file-selected(int);
     callback quit-requested();
+    callback toggle-view-mode();
+    callback open-help();
+    callback next-diff(int, bool);
 
     in-out property <length> code-font-size: 12px;
     in-out property <brush> gutter-line-color: #6272a4;
@@ -575,9 +596,10 @@ export component MainWindow inherits Window {
 
     in-out property <string> path-a: "";
     in-out property <string> path-b: "";
-    in-out property <string> status-text: "";
-    in-out property <string> file-info: "";
     in-out property <string> file-list-title: "";
+    in-out property <string> help-text: "";
+    in-out property <bool> show-help: false;
+    in-out property <bool> changes-only-view: false;
     in-out property <int> changed-file-count: 0;
     in-out property <int> selected-file-index: -1;
     in-out property <[DiffFileEntry]> changed-files;
@@ -588,8 +610,6 @@ export component MainWindow inherits Window {
     in-out property <length> max-file-path-width: 0px;
     private property <bool> file-list-focused: false;
     private property <bool> vim-pending-g: false;
-    private property <bool> show-status-bar: root.status-text != "" || root.file-info != "";
-    private property <length> status-bar-height: 72px;
 
     changed lines => {
         code-scroll.reset-scroll();
@@ -631,12 +651,16 @@ export component MainWindow inherits Window {
         file-list.scroll-file-horizontal(delta);
     }
 
+    public function scroll-to-code-line(line-index: int) {
+        code-scroll.scroll-to-line(line-index);
+    }
+
     pure function is-scroll-code-left(event: KeyEvent) -> bool {
-        event.text == "h" && !event.modifiers.shift && !root.vim-modifiers(event)
+        event.text == Key.LeftArrow && !root.vim-modifiers(event)
     }
 
     pure function is-scroll-code-right(event: KeyEvent) -> bool {
-        event.text == "l" && !event.modifiers.shift && !root.vim-modifiers(event)
+        event.text == Key.RightArrow && !root.vim-modifiers(event)
     }
 
     pure function vim-modifiers(event: KeyEvent) -> bool {
@@ -688,11 +712,38 @@ export component MainWindow inherits Window {
         event.text == "q" && !event.modifiers.shift && !root.vim-modifiers(event)
     }
 
+    pure function is-toggle-view-mode(event: KeyEvent) -> bool {
+        event.text == "u" && !event.modifiers.shift && !root.vim-modifiers(event)
+    }
+
+    pure function is-show-help(event: KeyEvent) -> bool {
+        event.text == "h" && !event.modifiers.shift && !root.vim-modifiers(event)
+    }
+
+    pure function is-next-diff(event: KeyEvent) -> bool {
+        event.text == "n" && !event.modifiers.shift && !root.vim-modifiers(event)
+    }
+
+    pure function is-prev-diff(event: KeyEvent) -> bool {
+        event.text == "n" && event.modifiers.shift && !root.vim-modifiers(event)
+    }
+
     root-focus := FocusScope {
         width: 100%;
         height: 100%;
 
         key-pressed(event) => {
+            if (root.show-help) {
+                if (event.text == Key.Escape) {
+                    root.show-help = false;
+                    return accept;
+                }
+                if (root.is-quit(event)) {
+                    root.quit-requested();
+                    return accept;
+                }
+                return accept;
+            }
             if (root.file-list-focused) {
                 if (root.is-scroll-code-left(event)) {
                     root.scroll-file-left();
@@ -797,12 +848,29 @@ export component MainWindow inherits Window {
                 }
             }
             root.vim-pending-g = false;
+            if (root.is-show-help(event)) {
+                root.open-help();
+                return accept;
+            }
+            if (!root.file-list-focused && !root.changes-only-view && root.is-next-diff(event)) {
+                root.next-diff(code-scroll.top-line-index(), false);
+                return accept;
+            }
+            if (!root.file-list-focused && !root.changes-only-view && root.is-prev-diff(event)) {
+                root.next-diff(code-scroll.top-line-index(), true);
+                return accept;
+            }
             if (event.text == Key.Escape) {
                 root.file-list-focused = false;
                 return accept;
             }
             if (root.is-quit(event)) {
                 root.quit-requested();
+                return accept;
+            }
+            if (root.is-toggle-view-mode(event)) {
+                root.toggle-view-mode();
+                root.vim-pending-g = false;
                 return accept;
             }
             if (root.is-code-font-larger(event)) {
@@ -871,7 +939,7 @@ export component MainWindow inherits Window {
 
                         code-scroll := DiffCodeScrollView {
                             width: parent.width;
-                            height: parent.height - (root.show-status-bar ? root.status-bar-height : 0px);
+                            height: parent.height;
                             code-line-height: root.code-line-height;
                             code-font-size: root.code-font-size;
                             line-number-width: root.line-number-width;
@@ -883,38 +951,57 @@ export component MainWindow inherits Window {
                                 root.file-list-focused = false;
                             }
                         }
+                    }
+                }
+            }
 
-                        status-bar := Rectangle {
-                            visible: root.show-status-bar;
-                            width: parent.width;
-                            height: root.status-bar-height;
-                            y: parent.height - self.height;
-                            background: #21222c;
-                            clip: true;
+            help-overlay := Rectangle {
+                visible: root.show-help;
+                width: parent.width;
+                height: parent.height;
+                z: 10;
+                background: #000000aa;
 
-                            VerticalBox {
-                                padding-left: 4px;
-                                padding-right: 4px;
-                                padding-top: 2px;
-                                padding-bottom: 2px;
-                                spacing: 2px;
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                }
 
-                                Text {
-                                    text: root.status-text;
-                                    color: #f8f8f2;
-                                    font-size: 12px;
-                                    wrap: word-wrap;
-                                    visible: root.status-text != "";
-                                }
+                Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: min(parent.width - 48px, 720px);
+                    height: min(parent.height - 48px, 520px);
+                    background: #21222c;
+                    border-width: 1px;
+                    border-color: #6272a4;
 
-                                Text {
-                                    text: root.file-info;
-                                    color: #bd93f9;
-                                    font-size: 12px;
-                                    wrap: word-wrap;
-                                    visible: root.file-info != "";
-                                }
-                            }
+                    VerticalBox {
+                        padding: 12px;
+                        spacing: 8px;
+                        width: parent.width;
+                        height: parent.height;
+
+                        Text {
+                            text: "Keyboard shortcuts";
+                            color: #f8f8f2;
+                            font-size: 14px;
+                            font-weight: 700;
+                        }
+
+                        Text {
+                            vertical-stretch: 1;
+                            text: root.help-text;
+                            color: #bd93f9;
+                            font-family: "Courier New";
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+
+                        Text {
+                            text: "Press Esc to close";
+                            color: #6272a4;
+                            font-size: 12px;
                         }
                     }
                 }

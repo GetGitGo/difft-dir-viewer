@@ -30,14 +30,14 @@ The viewer spawns `difft`, reads `--display json` output, shows a **Changed file
 
    (With `DFT_UNSTABLE=yes` and `DFT_PARSE_ERROR_LIMIT=4096` set in the subprocess environment.)
 
-3. Parse the JSON **array** — one entry per changed file (`--skip-unchanged` omits identical files from the list). Line text is read from disk with **UTF-8 lossy** decoding (invalid bytes become U+FFFD replacement characters); JSON carries alignment and change metadata (same format as difft-file-viewer). Per-file read/parse failures are skipped when possible; a summary may appear in the info overlay.
+3. Parse the JSON **array** — one entry per changed file (`--skip-unchanged` omits identical files from the list). Line text is read from disk with **UTF-8 lossy** decoding (invalid bytes become U+FFFD replacement characters); JSON carries alignment and change metadata (same format as difft-file-viewer). Per-file read/parse failures are skipped when possible.
 4. **Changed files** list shows relative paths with a status tag (binary files are omitted; use `-e` to restrict by extension):
    - **M** — modified (both sides)
    - **A** — added (only in B)
    - **D** — deleted (only in A)
 5. Selecting a file updates the side-by-side code panes.
 
-On success, status messages are hidden. Errors and diff fallback messages appear in a **bottom overlay** on the code pane (purple info text; same role as difft-file-viewer’s info area, but does not shrink the main layout).
+Errors on launch open the **help overlay** (`h` / `Esc`) with the message text.
 
 ### Nested directories
 
@@ -172,7 +172,7 @@ Shared with difft-file-viewer where applicable (fonts, colours, shortcuts):
 - **Borderless window** — no system title bar; quit with **`q`** (or close from the taskbar / **`Alt+F4`** on Windows).
 - **Top row (one line, full width):** **Changed files (N)** on the left (240px column) and directory **A / B path labels** on the right, same height.
 - **Main area:** changed-files list (left) + side-by-side code panes (right), filling the rest of the window edge-to-edge. Panel backgrounds reach the window edges; text uses a small **4px gutter** so characters are not clipped.
-- **Info overlay:** when present, status / warning text floats over the **bottom** of the code pane (~72px); hidden on a clean successful diff so the list and code use the full height.
+- **Help overlay:** press **`h`** for keyboard shortcuts; **`Esc`** closes it. Launch errors also appear here.
 
 Code panes use **Courier New**, bold weight, Dracula-style colours, compact line height (`font-size + 4px`), fixed line-number gutter, and horizontal scroll for long lines.
 
@@ -188,12 +188,12 @@ Focus must be on the diff panel for code scrolling (auto-focused after diff comp
 | `Ctrl+b` / `Ctrl+f` | Scroll one page |
 | `Ctrl+u` / `Ctrl+d` | Half page |
 | `Home` / `End`, `G`, `g` `g` | Top / bottom |
-| `h` / `l` | Scroll code horizontally (gutter fixed) |
+| `Left` / `Right` | Scroll code horizontally (gutter fixed) |
 | Trackpad / wheel | Smooth vertical scroll; horizontal when the gesture is mostly horizontal |
 
 ### Scrolling (Changed files sidebar focused)
 
-Click the sidebar first — the same scroll keys (`h` / `l`, page keys, `Home` / `End`, `G`, `g` `g`) apply to the **file list** instead of the code pane. Path text scrolls horizontally; the status column stays fixed. Wheel/trackpad scrolling in the sidebar is also smooth/damped.
+Click the sidebar first — the same scroll keys (`Left` / `Right`, page keys, `Home` / `End`, `G`, `g` `g`) apply to the **file list** instead of the code pane. Path text scrolls horizontally; the status column stays fixed. Wheel/trackpad scrolling in the sidebar is also smooth/damped.
 
 ### Font size
 
@@ -204,15 +204,32 @@ Click the sidebar first — the same scroll keys (`h` / `l`, page keys, `Home` /
 
 Line height, gutter width, and horizontal scroll step scale with font size. Font-size shortcuts work regardless of sidebar vs code focus.
 
-**Scroll feel:** wheel and trackpad use velocity decay (~60 fps); **keyboard** (`Page Up`/`Down`, `Home`/`End`, `h`/`l`, etc.) jumps instantly with no animation.
+**Scroll feel:** wheel and trackpad use velocity decay (~60 fps); **keyboard** (`Page Up`/`Down`, `Home`/`End`, `Left`/`Right`, etc.) jumps instantly with no animation.
+
+### Diff navigation (full file view only)
+
+| Key | Action |
+|-----|--------|
+| `n` | Jump to next change (from current scroll position) |
+| `Shift+n` | Jump to previous change |
+
+### View / help
+
+| Key | Action |
+|-----|--------|
+| `u` | Toggle **full file** / **changes only** (unchanged runs collapse to `… 第 X–Y 行被隐去 …`) |
+| `h` | Show keyboard shortcuts overlay |
+| `Esc` | Close help overlay (when open) |
 
 ### Other
 
 | Key | Action |
 |-----|--------|
-| `Escape` | Leave sidebar focus; return shortcuts to the code pane |
+| `Esc` | Leave sidebar focus; return shortcuts to the code pane (when help is closed) |
 | `q` | Quit the viewer |
 | `Alt+F4` | Quit (Windows, standard close shortcut) |
+
+**Note:** `Ctrl+u` / `⌘u` still scrolls half a page up; plain `u` toggles the view mode.
 
 ## JSON format (important)
 
@@ -246,7 +263,7 @@ The viewer reads **line text from disk** under directory A / B. Legacy JSON with
 | Encoding | Files read as bytes, decoded with **UTF-8 lossy**; GBK/mixed sources may show U+FFFD or mojibake but rarely abort the whole directory diff |
 | Line numbers | Display 1-based; JSON indices 0-based |
 | Tabs | Display expands tabs for alignment (Courier New) |
-| Long lines | Horizontal scroll via `h` / `l` |
+| Long lines | Horizontal scroll via `Left` / `Right` |
 | Ignore rules | Same as CLI (`.gitignore`, etc.) — not controlled by the viewer |
 
 ## Troubleshooting
@@ -258,8 +275,8 @@ The viewer reads **line text from disk** under directory A / B. Legacy JSON with
 | `Path A is not a directory` | Pick a directory, not a single file |
 | Empty changed list | No differences, or all files unchanged |
 | U+FFFD or garbled Chinese in code | Non–UTF-8 source (e.g. GBK); viewer uses lossy UTF-8 — diff still runs |
-| Skipped N file(s)… in overlay | Some files failed read/parse; others still listed |
-| A/D file empty in panes | Missing file on disk or alignment empty — check purple overlay message |
+| Skipped N file(s)… | Some files failed read/parse; others still listed |
+| A/D file empty in panes | Missing file on disk or alignment empty |
 
 ## License
 

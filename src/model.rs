@@ -77,6 +77,23 @@ struct NewChange {
     highlight: crate::segments::Highlight,
 }
 
+/// How much of the current file to show in the code panes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    #[default]
+    Full,
+    ChangesOnly,
+}
+
+impl ViewMode {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Full => Self::ChangesOnly,
+            Self::ChangesOnly => Self::Full,
+        }
+    }
+}
+
 /// One row ready for the Slint diff panes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayLine {
@@ -88,6 +105,7 @@ pub struct DisplayLine {
     pub is_novel_rhs: bool,
     pub lhs_spans: Vec<crate::segments::TextSpan>,
     pub rhs_spans: Vec<crate::segments::TextSpan>,
+    pub is_collapsed: bool,
 }
 
 fn uses_legacy_aligned_lines(value: &serde_json::Value) -> bool {
@@ -363,6 +381,7 @@ fn aligned_to_display(lines: &[AlignedLine]) -> Vec<DisplayLine> {
             is_novel_rhs: line.is_novel_rhs,
             lhs_spans: line.lhs_spans.clone(),
             rhs_spans: line.rhs_spans.clone(),
+            is_collapsed: false,
         })
         .collect()
 }
@@ -385,6 +404,7 @@ fn lines_from_file(path: &Path, side: DiffStatus) -> Result<Vec<DisplayLine>, St
                     is_novel_rhs: false,
                     lhs_spans: vec![],
                     rhs_spans: vec![],
+                    is_collapsed: false,
                 },
                 DiffStatus::Created => DisplayLine {
                     lhs_line: None,
@@ -395,6 +415,7 @@ fn lines_from_file(path: &Path, side: DiffStatus) -> Result<Vec<DisplayLine>, St
                     is_novel_rhs: true,
                     lhs_spans: vec![],
                     rhs_spans: vec![],
+                    is_collapsed: false,
                 },
                 _ => unreachable!(),
             }
@@ -407,15 +428,109 @@ pub fn display_lines(
     path_a: &Path,
     path_b: &Path,
 ) -> Result<Vec<DisplayLine>, String> {
-    if !file.aligned_lines.is_empty() {
-        return Ok(aligned_to_display(&file.aligned_lines));
-    }
+    let lines = if !file.aligned_lines.is_empty() {
+        aligned_to_display(&file.aligned_lines)
+    } else {
+        match file.status {
+            DiffStatus::Deleted => lines_from_file(&path_a.join(&file.path), DiffStatus::Deleted)?,
+            DiffStatus::Created => lines_from_file(&path_b.join(&file.path), DiffStatus::Created)?,
+            _ => Vec::new(),
+        }
+    };
+    Ok(lines)
+}
 
-    match file.status {
-        DiffStatus::Deleted => lines_from_file(&path_a.join(&file.path), DiffStatus::Deleted),
-        DiffStatus::Created => lines_from_file(&path_b.join(&file.path), DiffStatus::Created),
-        _ => Ok(Vec::new()),
+/// Whether a display row shows a textual or alignment change.
+pub fn line_has_changes(line: &DisplayLine) -> bool {
+    line.is_novel_lhs
+        || line.is_novel_rhs
+        || line.lhs_text != line.rhs_text
+}
+
+fn format_hidden_lines(start: Option<u32>, end: Option<u32>) -> String {
+    match (start, end) {
+        (None, None) => String::new(),
+        (Some(line), None) | (None, Some(line)) => format!("… 第 {} 行被隐去 …", line + 1),
+        (Some(start), Some(end)) if start == end => format!("… 第 {} 行被隐去 …", start + 1),
+        (Some(start), Some(end)) => format!("… 第 {}–{} 行被隐去 …", start + 1, end + 1),
     }
+}
+
+fn collapsed_placeholder(run: &[DisplayLine]) -> DisplayLine {
+    let lhs_start = run.iter().find_map(|line| line.lhs_line);
+    let lhs_end = run.iter().rev().find_map(|line| line.lhs_line);
+    let rhs_start = run.iter().find_map(|line| line.rhs_line);
+    let rhs_end = run.iter().rev().find_map(|line| line.rhs_line);
+
+    DisplayLine {
+        lhs_line: None,
+        rhs_line: None,
+        lhs_text: format_hidden_lines(lhs_start, lhs_end),
+        rhs_text: format_hidden_lines(rhs_start, rhs_end),
+        is_novel_lhs: false,
+        is_novel_rhs: false,
+        lhs_spans: vec![],
+        rhs_spans: vec![],
+        is_collapsed: true,
+    }
+}
+
+/// Replace runs of unchanged lines with a single placeholder row per run.
+pub fn collapse_unchanged_sections(lines: &[DisplayLine]) -> Vec<DisplayLine> {
+    let mut result = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if line_has_changes(&lines[index]) {
+            result.push(lines[index].clone());
+            index += 1;
+            continue;
+        }
+
+        let start = index;
+        while index < lines.len() && !line_has_changes(&lines[index]) {
+            index += 1;
+        }
+        result.push(collapsed_placeholder(&lines[start..index]));
+    }
+    result
+}
+
+pub fn apply_view_mode(lines: Vec<DisplayLine>, mode: ViewMode) -> Vec<DisplayLine> {
+    match mode {
+        ViewMode::Full => lines,
+        ViewMode::ChangesOnly => collapse_unchanged_sections(&lines),
+    }
+}
+
+/// Indices of rows that contain a diff (for `n` / `Shift+n` navigation in full-file mode).
+pub fn diff_line_indices(lines: &[DisplayLine]) -> Vec<usize> {
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| line_has_changes(line).then_some(index))
+        .collect()
+}
+
+pub fn next_diff_index(indices: &[usize], current_line: usize) -> Option<usize> {
+    if indices.is_empty() {
+        return None;
+    }
+    indices
+        .iter()
+        .find(|&&index| index > current_line)
+        .or_else(|| indices.first())
+        .copied()
+}
+
+pub fn prev_diff_index(indices: &[usize], current_line: usize) -> Option<usize> {
+    if indices.is_empty() {
+        return None;
+    }
+    indices
+        .iter()
+        .rfind(|&&index| index < current_line)
+        .or_else(|| indices.last())
+        .copied()
 }
 
 /// Normalize a CLI extension (`cpp`, `.cpp`, `CPP` → `cpp`).
@@ -636,12 +751,66 @@ mod tests {
     }
 
     #[test]
+    fn diff_navigation_finds_next_and_previous_indices() {
+        let indices = vec![2, 5, 9];
+        assert_eq!(next_diff_index(&indices, 0), Some(2));
+        assert_eq!(next_diff_index(&indices, 5), Some(9));
+        assert_eq!(next_diff_index(&indices, 9), Some(2));
+        assert_eq!(prev_diff_index(&indices, 10), Some(9));
+        assert_eq!(prev_diff_index(&indices, 5), Some(2));
+        assert_eq!(prev_diff_index(&indices, 2), Some(9));
+    }
+
+    #[test]
     fn normalize_extension_accepts_dotted_and_uppercase() {
         assert_eq!(normalize_extension("cpp").as_deref(), Some("cpp"));
         assert_eq!(normalize_extension(".CPP").as_deref(), Some("cpp"));
         assert_eq!(normalize_extension("  .h  ").as_deref(), Some("h"));
         assert!(normalize_extension(".").is_none());
         assert!(normalize_extension("").is_none());
+    }
+
+    fn sample_display_line(
+        lhs_line: Option<u32>,
+        rhs_line: Option<u32>,
+        lhs_text: &str,
+        rhs_text: &str,
+        novel: bool,
+    ) -> DisplayLine {
+        DisplayLine {
+            lhs_line,
+            rhs_line,
+            lhs_text: lhs_text.to_owned(),
+            rhs_text: rhs_text.to_owned(),
+            is_novel_lhs: novel,
+            is_novel_rhs: novel,
+            lhs_spans: vec![],
+            rhs_spans: vec![],
+            is_collapsed: false,
+        }
+    }
+
+    #[test]
+    fn collapse_unchanged_sections_replaces_runs_with_placeholder() {
+        let lines = vec![
+            sample_display_line(Some(0), Some(0), "same", "same", false),
+            sample_display_line(Some(1), Some(1), "same", "same", false),
+            sample_display_line(Some(2), Some(2), "old", "new", true),
+            sample_display_line(Some(3), Some(3), "same", "same", false),
+        ];
+        let collapsed = collapse_unchanged_sections(&lines);
+        assert_eq!(collapsed.len(), 3);
+        assert!(collapsed[0].is_collapsed);
+        assert_eq!(collapsed[0].lhs_text, "… 第 1–2 行被隐去 …");
+        assert!(line_has_changes(&collapsed[1]));
+        assert!(collapsed[2].is_collapsed);
+        assert_eq!(collapsed[2].lhs_text, "… 第 4 行被隐去 …");
+    }
+
+    #[test]
+    fn apply_view_mode_full_leaves_lines_unchanged() {
+        let lines = vec![sample_display_line(Some(0), Some(0), "a", "a", false)];
+        assert_eq!(apply_view_mode(lines.clone(), ViewMode::Full), lines);
     }
 
     #[test]

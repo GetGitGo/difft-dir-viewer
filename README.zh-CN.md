@@ -30,14 +30,14 @@ Viewer 子进程调用 `difft`，读取 `--display json` 输出，左侧展示 *
 
    （子进程环境中会设置 `DFT_UNSTABLE=yes` 与 `DFT_PARSE_ERROR_LIMIT=4096`。）
 
-3. 解析 JSON **数组** — 每个变更文件一项（通过 `--skip-unchanged` 省略内容相同的文件）。行文本从磁盘读取，采用 **UTF-8 lossy** 解码（非法字节显示为 U+FFFD 替换字符）；JSON 携带对齐与变更元数据（与 difft-file-viewer 相同格式）。单文件读盘/解析失败时尽量跳过其余文件；汇总信息可能出现在底部 overlay。
+3. 解析 JSON **数组** — 每个变更文件一项（通过 `--skip-unchanged` 省略内容相同的文件）。行文本从磁盘读取，采用 **UTF-8 lossy** 解码（非法字节显示为 U+FFFD 替换字符）；JSON 携带对齐与变更元数据（与 difft-file-viewer 相同格式）。单文件读盘/解析失败时尽量跳过其余文件。
 4. **Changed files** 列表显示相对路径与状态标记（二进制文件不显示；可用 `-e` 按后缀过滤）：
    - **M** — 修改（两侧都有）
    - **A** — 新增（仅在 B）
    - **D** — 删除（仅在 A）
 5. 点击文件名切换右侧 diff 内容。
 
-成功时隐藏状态行；错误与 fallback 警告显示在代码区 **底部 overlay**（紫色信息文字；作用与 difft-file-viewer 的信息区相同，但不占用主布局高度）。
+启动错误会在 **帮助 overlay**（`h` / `Esc`）中显示。
 
 ### 多层目录
 
@@ -168,7 +168,7 @@ cargo run --manifest-path difft-dir-viewer/Cargo.toml -- \
 - **无边框窗口** — 无系统标题栏；用 **`q`** 退出（Windows 亦可用任务栏关闭 / **`Alt+F4`**）。
 - **顶栏（单行、全宽）：** 左侧 **Changed files (N)**（240px 列），右侧目录 **A / B 路径标签**，同一行对齐。
 - **主区域：** 变更文件列表（左）+ 双栏 diff（右），占满剩余空间、面板背景贴窗口边缘；文字保留 **4px gutter**，避免字符被裁切。
-- **信息 overlay：** 有警告/错误时在代码区 **底部** 浮层显示（约 72px 高，紫色文字）；成功且无警告时隐藏，列表与代码区占满高度。
+- **帮助 overlay：** 按 **`h`** 查看快捷键；**`Esc`** 关闭。启动错误亦在此显示。
 
 代码区使用 **Courier New** 粗体、Dracula 配色、紧凑行高（`字号 + 4px`）、固定行号 gutter、长行可横向滚动。
 
@@ -184,12 +184,12 @@ cargo run --manifest-path difft-dir-viewer/Cargo.toml -- \
 | `Ctrl+b` / `Ctrl+f` | 翻一整页 |
 | `Ctrl+u` / `Ctrl+d` | 翻半页 |
 | `Home` / `End`、`G`、`g` `g` | 顶部 / 底部 |
-| `h` / `l` | 代码区水平滚动（gutter 固定） |
+| `Left` / `Right` | 代码区水平滚动（gutter 固定） |
 | 触摸板 / 滚轮 | 纵向平滑滚动；以水平滑动为主时走横向 |
 
 ### 滚动（焦点在 Changed files 侧栏）
 
-先点击侧栏 — 相同滚动键（`h`/`l`、翻页、`Home`/`End`、`G`、`g` `g`）作用于 **文件列表**。路径可横向滚动，状态列固定。侧栏滚轮/触控板同样为阻尼平滑滚动。
+先点击侧栏 — 相同滚动键（`Left`/`Right`、翻页、`Home`/`End`、`G`、`g` `g`）作用于 **文件列表**。路径可横向滚动，状态列固定。侧栏滚轮/触控板同样为阻尼平滑滚动。
 
 ### 字号
 
@@ -200,15 +200,32 @@ cargo run --manifest-path difft-dir-viewer/Cargo.toml -- \
 
 行高、gutter 宽度、水平滚动步长随字号缩放。字号快捷键在侧栏或代码区聚焦时均可用。
 
-**滚动手感：** 滚轮/触控板带速度衰减（约 60fps）；**键盘**（`Page Up`/`Down`、`Home`/`End`、`h`/`l` 等）仍为瞬时跳转，无动画。
+**滚动手感：** 滚轮/触控板带速度衰减（约 60fps）；**键盘**（`Page Up`/`Down`、`Home`/`End`、`Left`/`Right` 等）仍为瞬时跳转，无动画。
+
+### 差异跳转（仅全文件视图）
+
+| 按键 | 作用 |
+|------|------|
+| `n` | 跳转到下一处差异（从当前滚动位置起） |
+| `Shift+n` | 跳转到上一处差异 |
+
+### 视图 / 帮助
+
+| 按键 | 作用 |
+|------|------|
+| `u` | 切换 **全文件** / **仅差异**（相同行折叠为 `… 第 X–Y 行被隐去 …`） |
+| `h` | 显示快捷键帮助 overlay |
+| `Esc` | 关闭帮助 overlay（打开时） |
 
 ### 其他
 
 | 按键 | 作用 |
 |------|------|
-| `Escape` | 退出侧栏焦点，快捷键回到代码区 |
+| `Esc` | 退出侧栏焦点，快捷键回到代码区（帮助关闭时） |
 | `q` | 退出 viewer |
 | `Alt+F4` | 退出（Windows 标准关闭） |
+
+**说明：** `Ctrl+u` / `⌘u` 仍为向上半页；单独按 `u` 切换显示模式。
 
 ## JSON 格式（重要）
 
@@ -242,7 +259,7 @@ Viewer 从目录 A/B 下 **读磁盘行文本**。仍兼容旧版 embedded `lhs_
 | 编码 | 按字节读盘，**UTF-8 lossy** 解码；GBK 等混合源可能出现 U+FFFD 或乱码，但很少导致整目录 diff 失败 |
 | 行号 | 显示 1-based；JSON 索引 0-based |
 | Tab | 显示时展开 tab（Courier New 对齐） |
-| 长行 | `h` / `l` 或触摸板横向滚动 |
+| 长行 | `Left` / `Right` 或触摸板横向滚动 |
 | 忽略规则 | 与 CLI 相同（如 `.gitignore`），viewer 不可配置 |
 
 ## 故障排查
@@ -254,8 +271,8 @@ Viewer 从目录 A/B 下 **读磁盘行文本**。仍兼容旧版 embedded `lhs_
 | `Path A is not a directory` | 请选择目录，不要选单个文件 |
 | Changed files 为空 | 无差异或全部 unchanged |
 | 代码中出现 U+FFFD 或中文乱码 | 非 UTF-8 源文件（如 GBK）；viewer 使用 lossy UTF-8 — diff 仍可进行 |
-| overlay 显示 Skipped N file(s)… | 部分文件读盘/解析失败；其余文件仍可见 |
-| A/D 文件内容区空白 | 磁盘上无对应文件或对齐为空 — 查看紫色 overlay 提示 |
+| Skipped N file(s)… | 部分文件读盘/解析失败；其余文件仍可见 |
+| A/D 文件内容区空白 | 磁盘上无对应文件或对齐为空 |
 
 ## 许可证
 

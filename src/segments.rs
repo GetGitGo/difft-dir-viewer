@@ -331,6 +331,10 @@ pub fn plain_line_brush(novel: bool, side: Side) -> Brush {
     code_brush(hex)
 }
 
+pub fn collapsed_line_brush() -> Brush {
+    code_brush(BLUE)
+}
+
 pub fn text_pixel_width(text: &str) -> f32 {
     expand_tabs_display(text).chars().count() as f32 * CHAR_WIDTH
 }
